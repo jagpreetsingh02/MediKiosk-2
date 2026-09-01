@@ -1,0 +1,56 @@
+# MediKiosk runtime dependencies. Plain venv + pip, per the build brief.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+pydantic-settings>=2.4
+sqlalchemy[asyncio]>=2.0.30
+asyncpg>=0.29
+aiosqlite>=0.20
+greenlet>=3.0
+alembic>=1.13
+httpx>=0.27
+redis>=5.0
+fhir.resources>=7.1
+pyyaml>=6.0
+pyjwt>=2.9
+structlog>=24.4
+python-multipart>=0.0.9
+pypdf>=5.0
+pillow>=10.4
+pypdfium2>=4.30
+
+# The clinical brief as a PDF (app/modules/report/pdf.py). RUNTIME, not tooling.
+#
+# ⛔ reportlab was missing from this file while being imported at module scope, and the local
+# suite could never have caught it: the package was sitting in the dev venv as an undeclared
+# leftover, so `import reportlab` worked, 404 tests passed, and the Docker image had no idea.
+# The deploy died with ModuleNotFoundError before uvicorn could load the app.
+# tests/test_dependencies_are_declared.py now reads the import graph against this file.
+reportlab>=4.0
+
+# Build-time only: derives the PDF's Inter faces from the woff2 the web build serves
+# (scripts/make_pdf_fonts.py). The resulting TTFs are COMMITTED under data/fonts/, so the
+# runtime image never needs this — but the script has to stay runnable.
+fonttools[woff]>=4.5
+
+# Image conditioning for OCR (app/modules/documents/imaging.py). A phone photo needs EXIF
+# orientation applied, greyscale, resolution normalisation, deskew and an adaptive threshold
+# before Tesseract can read it; without them image OCR returns empty output or confident
+# nonsense, silently.
+numpy>=2.0            # deskew projection profile and the local-mean threshold
+pillow-heif>=1.0      # iPhones shoot HEIC by default; Pillow cannot open one without this
+
+# OPTIONAL, and deliberately not required to run or test anything.
+#
+# `vosk` gives genuine offline ASR, which the voice fixture is transcribed through
+# (scripts/make_voice_fixture.py). Without it the seed records the spoken answer with its
+# confidence marked UNAVAILABLE rather than substituting a number — the honest branch, and
+# the one a fresh clone actually takes. The acoustic model is a separate ~40MB download:
+#
+#   pip install vosk
+#   curl -sSLO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+#   unzip vosk-model-small-en-us-0.15.zip -d ~/.cache/medikiosk-models
+#   export VOSK_MODEL_DIR=~/.cache/medikiosk-models/vosk-model-small-en-us-0.15
+#
+# Nobody should need 40MB to clone this repo, which is why it is a comment and not a pin.
+# vosk>=0.3.44

@@ -1,0 +1,161 @@
+/**
+ * tokens.css — everything about the design system that is NOT a colour.
+ *
+ * Type, space, radius, motion, elevation names, z-index, and the two density modes. Colour
+ * lives in `theme.css`, which is the only file in the application permitted to contain a raw
+ * value; a repo check (`scripts/check_no_raw_colours.py`) fails the build otherwise. Splitting
+ * them is what makes "re-theme the product" a change to one file rather than a search.
+ *
+ * ONE VISUAL LANGUAGE, TWO DENSITIES. The kiosk and the physician workspace no longer differ
+ * in theme — not one colour separates them. They differ in geometry:
+ *
+ *   PATIENT   Enormous targets (60/76px), reading sizes a step up, generous gutters. The user
+ *             may be elderly, standing, and unfamiliar with the device.
+ *
+ *   CLINICAL  Compact targets (38/44px), reading sizes a step down, tight gutters. A clinician
+ *             reads their fortieth history of the morning and wants the record on one screen.
+ *
+ * Both are built from the hero's material. A patient who taps Start on the landing page and a
+ * physician who opens the brief are looking at the same product at two zoom levels.
+ */
+
+:root {
+  /* ======================================================== typography ===
+   * The hero is Inter and nothing else — one family carrying display and UI,
+   * separated by weight and tracking rather than by a second typeface. Self
+   * hosted through @fontsource rather than linked from Google, because the
+   * kiosk is expected to run with no network and a webfont that silently
+   * fails takes the whole typographic hierarchy down with it. Same face, same
+   * rendering, no CDN.
+   */
+  --mk-font-display: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mk-font-ui: var(--mk-font-display);
+  --mk-font-indic: 'Noto Sans Devanagari', 'Noto Sans Tamil', var(--mk-font-ui);
+  --mk-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  --mk-body-font: var(--mk-font-ui);
+
+  --mk-text-2xs: 0.75rem;   /* 12 — metadata, never body */
+  --mk-text-xs: 0.8125rem;  /* 13 */
+  --mk-text-sm: 0.9375rem;  /* 15 */
+  --mk-text-base: 1.0625rem;/* 17 */
+  --mk-text-lg: 1.25rem;    /* 20 */
+  --mk-text-xl: 1.5rem;     /* 24 */
+  --mk-text-2xl: 1.875rem;  /* 30 */
+  --mk-text-3xl: 2.375rem;  /* 38 */
+  --mk-text-4xl: 3rem;      /* 48 */
+  --mk-text-5xl: 3.75rem;   /* 60 */
+
+  --mk-leading-tight: 1.05;   /* the hero's h1 leading, exactly */
+  --mk-leading-snug: 1.25;
+  --mk-leading-normal: 1.5;
+  --mk-leading-relaxed: 1.65;
+
+  /* -0.05em is the hero heading's tracking. It is extreme on purpose and only
+     correct at display sizes; `snug` is the working value for everything else. */
+  --mk-tracking-display: -0.05em;
+  --mk-tracking-tight: -0.035em;
+  --mk-tracking-snug: -0.015em;
+  --mk-tracking-normal: 0;
+  --mk-tracking-wide: 0.06em;
+  --mk-tracking-caps: 0.1em;
+
+  /* The hero writes headings at 400 and body at 300. Weight carries far less of
+     the hierarchy here than size and opacity do — that restraint is most of why
+     it reads as expensive rather than loud. */
+  --mk-weight-light: 300;
+  --mk-weight-normal: 400;
+  --mk-weight-medium: 500;
+  --mk-weight-semibold: 600;
+  --mk-weight-bold: 700;
+  --mk-weight-black: 800;
+
+  /* ============================================================ space === */
+  --mk-space-1: 0.25rem;
+  --mk-space-2: 0.5rem;
+  --mk-space-3: 0.75rem;
+  --mk-space-4: 1rem;
+  --mk-space-5: 1.25rem;
+  --mk-space-6: 1.5rem;
+  --mk-space-8: 2rem;
+  --mk-space-10: 2.5rem;
+  --mk-space-12: 3rem;
+  --mk-space-16: 4rem;
+  --mk-space-20: 5rem;
+  --mk-space-24: 6rem;
+
+  /* =========================================================== radius ===
+   * The hero rounds everything interactive to a pill and everything containing
+   * to a large radius. There are no sharp corners anywhere in it.
+   */
+  --mk-radius-xs: 8px;
+  --mk-radius-sm: 12px;
+  --mk-radius-md: 16px;
+  --mk-radius-lg: 22px;
+  --mk-radius-xl: 28px;
+  --mk-radius-2xl: 36px;
+  --mk-radius-pill: 999px;
+
+  /* Elevation names live in theme.css, because a shadow is a colour. */
+
+  /* =========================================================== motion ===
+   * The hero animates in exactly two registers: 300ms for anything a finger
+   * or a pointer triggers, 500ms for anything that moves a whole layer. It
+   * uses the browser default ease for both. Those two numbers are the entire
+   * motion vocabulary and everything below is built to land on them.
+   */
+  --mk-dur-instant: 90ms;
+  --mk-dur-fast: 160ms;
+  --mk-dur-normal: 300ms;
+  --mk-dur-slow: 500ms;
+  --mk-dur-slower: 700ms;
+
+  --mk-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --mk-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --mk-ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  /* The hero's own `transition duration-300` is plain `ease`; this is the
+     matched curve for the places we drive motion from JS. */
+  --mk-ease-hero: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --mk-ease-spring: linear(
+    0, 0.0033 0.8%, 0.0263 2.39%, 0.0896 4.77%, 0.4165 12.12%, 0.5314, 0.6316,
+    0.7181, 0.7929 21.06%, 0.8593, 0.9142, 0.9584 27.61%, 0.9933 31.19%,
+    1.0176 34.77%, 1.0289 36.86%, 1.0369 39.25%, 1.0405 42.23%, 1.0388 45.8%,
+    1.0322 49.98%, 1.0044 62.5%, 0.9971 67.28%, 0.9946 72.06%, 0.9987 85.18%, 1
+  );
+
+  --mk-z-ambient: -1;
+  --mk-z-base: 0;
+  --mk-z-sticky: 10;
+  --mk-z-header: 20;
+  --mk-z-drawer: 40;
+  --mk-z-modal: 50;
+  --mk-z-toast: 60;
+}
+
+/* ==================================================== PATIENT DENSITY ===
+ * The default, because the kiosk is the front door. Targets are far above the
+ * 44px guideline because the user may be elderly, standing, and unfamiliar with
+ * the device; reading sizes sit a step up for the same reason.
+ */
+:root,
+[data-surface='kiosk'] {
+  --mk-touch-min: 60px;
+  --mk-touch-lg: 76px;
+  --mk-body-size: var(--mk-text-base);
+  --mk-gutter: var(--mk-space-8);
+  --mk-pane-radius: var(--mk-radius-xl);
+}
+
+/* ================================================== CLINICAL DENSITY ===
+ * Same material, more of it on screen. A clinician reads their fortieth history
+ * of the morning with a keyboard, and wants the whole record visible at once.
+ */
+[data-surface='clinical'] {
+  --mk-touch-min: 38px;
+  --mk-touch-lg: 44px;
+  --mk-body-size: var(--mk-text-sm);
+  --mk-gutter: var(--mk-space-5);
+  --mk-pane-radius: var(--mk-radius-lg);
+  /* The denser pane FILL is a colour, so it lives in theme.css alongside the rest
+     of the palette — it is the one and only colour difference between the two
+     surfaces, and keeping it there is what lets the contrast test see it. */
+}

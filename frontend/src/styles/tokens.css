@@ -1,0 +1,168 @@
+/* Legacy tokens — now aliases onto the shared design system.
+ *
+ * These names (`--ink`, `--paper`, `--accent`, …) predate the `--mk-` system and are still
+ * referenced by `kiosk.css` and `physician.css`, which style the screens that have not been
+ * rebuilt yet. They used to hold their own light palette, which is what made those screens
+ * render as white cards on the dark ground — a leftover from a different product sitting in
+ * the middle of this one.
+ *
+ * Every one of them now points at the semantic layer in `design/tokens.css`. Nothing here
+ * defines a colour of its own. A screen still written against `--paper` gets glass, a screen
+ * still written against `--ink` gets the white-on-black ink ramp, and the two stylesheets can
+ * be deleted screen by screen without a visual step at any point along the way.
+ *
+ * `--paper` is the one that needs explaining: it named an opaque white surface, and there are
+ * no opaque surfaces any more, so it resolves to the glass fill. Legacy rules that set a
+ * background to `var(--paper)` therefore produce a translucent pane rather than a white box —
+ * which is the intent, just arrived at from the other direction.
+ */
+
+:root {
+  /* --- palette (aliases) --------------------------------------------------- */
+  --ink: var(--mk-ink);
+  --ink-2: var(--mk-ink-muted);
+  --ink-3: var(--mk-ink-subtle);
+  --paper: var(--mk-glass-fill-raised);
+  --paper-2: var(--mk-light-05);
+  --paper-3: var(--mk-light-08);
+  --line: var(--mk-line);
+
+  --accent: var(--mk-accent);
+  --accent-dark: var(--mk-accent-hover);
+  --accent-soft: var(--mk-accent-soft);
+
+  --ok: var(--mk-accent-ink);
+  --ok-soft: var(--mk-accent-soft);
+  --warn: var(--mk-warm-ink);
+  --warn-soft: var(--mk-warm-soft);
+  --danger: var(--mk-danger-ink);
+  --danger-soft: var(--mk-danger-soft);
+  --immediate: var(--mk-danger-ink);
+
+  /* --- type (aliases) ------------------------------------------------------ */
+  --font: var(--mk-font-ui);
+  --mono: var(--mk-font-mono);
+
+  /* --- geometry (aliases) -------------------------------------------------- */
+  --radius: var(--mk-radius-sm);
+  --radius-lg: var(--mk-radius-lg);
+  --shadow: var(--mk-shadow-sm);
+  --shadow-lg: var(--mk-shadow-lg);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+/* Deliberately no `body` background or colour here. `design/base.css` owns the
+   document, and this file loading first used to mean the legacy light background
+   won — which is the bug that made the whole surface render flat. */
+body {
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+:focus-visible {
+  outline: 3px solid var(--mk-accent);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* A permanent, unmissable reminder that the identity layer is a mock. A judge should never
+ * have to ask whether the ABHA integration is real.
+ *
+ * It is the one piece of chrome allowed to break the glass language — a disclaimer that
+ * blends into the design is a disclaimer that is not doing its job. The hazard stripe stays;
+ * it is simply re-cut for a dark ground, in amber rather than the old mud brown, since
+ * amber is already this product's colour for "pay attention to this".
+ */
+.mock-banner {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--mk-hazard-a),
+    var(--mk-hazard-a) 12px,
+    var(--mk-hazard-b) 12px,
+    var(--mk-hazard-b) 24px
+  );
+  border-bottom: 1px solid var(--mk-warm-edge);
+  color: var(--mk-warm-ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+}
+
+/* The local-demo database badge. Like `.mock-banner`, this is chrome that is ALLOWED to break
+ * the glass language, because a warning that blends into the design is a warning nobody
+ * reads. Rose rather than amber: the mock-identity banner is already amber, and these two
+ * must not be mistaken for each other. */
+/* Height reserved by the layout below, so the bar never sits on top of the nav. */
+:root {
+  --mk-dbbadge-h: 30px;
+}
+
+.mk-dbbadge {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--mk-z-toast);
+  min-height: var(--mk-dbbadge-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--mk-space-2) var(--mk-space-3);
+  padding: var(--mk-space-2) var(--mk-space-4);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--mk-danger-soft),
+    var(--mk-danger-soft) 12px,
+    var(--mk-danger-soft-strong) 12px,
+    var(--mk-danger-soft-strong) 24px
+  );
+  border-bottom: 1px solid var(--mk-danger-edge);
+  color: var(--mk-danger-ink);
+  font-size: var(--mk-text-2xs);
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.mk-dbbadge strong {
+  font-weight: var(--mk-weight-bold);
+  letter-spacing: var(--mk-tracking-wide);
+  text-transform: uppercase;
+}
+
+.mk-dbbadge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mk-danger);
+  flex: none;
+}
+
+/* Make room for the badge. Only ever active in local-demo mode, so the real product pays
+   nothing for it. `.phys` is a viewport-height grid and needs its height reduced rather
+   than merely padded, or its bottom row is pushed out of view. */
+[data-local-db] .mk-route {
+  padding-top: var(--mk-dbbadge-h);
+}
+
+[data-local-db] .phys {
+  height: calc(100dvh - var(--mk-dbbadge-h));
+}
+
+[data-local-db] .hx {
+  height: calc(100dvh - var(--mk-dbbadge-h));
+}
