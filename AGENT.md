@@ -99,7 +99,7 @@ app/
   terminology/   guard.py (ported: emit_coding), store.py, sidecar.py
   fhir/          r4.py (R4B models, stamped 4.0.1), bundle.py, outcomes.py
   auth/ audit/   ported from SIH 25026 — see docs/PORTED.md
-  api/           33 endpoints
+  api/           60 endpoints (was 67; the 6 demo routes and /inspect were removed)
 frontend/src/    Vite + React + TS. BEING REBUILT FROM SCRATCH — currently a blank shell
                  plus lib/api.ts, the typed client for the API above. One component per file.
 ```
