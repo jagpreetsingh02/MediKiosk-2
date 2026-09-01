@@ -23,6 +23,18 @@ import pytest
 
 THEME = Path(__file__).resolve().parents[1] / "frontend" / "src" / "design" / "theme.css"
 
+# The UI is being rebuilt from scratch (see the "Strip the old UI" commit). This guard is
+# NOT retired — it re-arms by itself the moment the new frontend ships a theme.css at the
+# path below. Deleting it instead would have quietly dropped an accessibility gate that no
+# one would think to re-add.
+if not THEME.exists():  # pragma: no cover - frontend rebuild in progress
+    pytest.skip(
+        "frontend/src/design/theme.css does not exist yet — rebuild in progress. This "
+        "suite re-arms automatically when the new theme lands.",
+        allow_module_level=True,
+    )
+
+
 AA_BODY = 4.5
 AA_LARGE = 3.0
 

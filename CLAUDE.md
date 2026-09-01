@@ -7,8 +7,8 @@ rule-or-LLM policy, and the layout. This file covers working conventions only.
 
 1. Read `AGENT.md`. The six invariants are architectural and each has a test that fails the
    build. If a request conflicts with one, **stop and raise it** rather than working around it.
-2. Run `make check` (lint + tests + strict eval). It must be green before you start, so you
-   know what you broke.
+2. Run `make check` (lint + tests). It must be green before you start, so you know what you
+   broke.
 
 ## While you work
 
@@ -40,8 +40,11 @@ the held-out set precisely because the first number alone is misleading; keep it
 something is mocked, unverified, or measured on synthetic data, say so in the same breath as
 the number — `/about` and `UPDATE.md` both do this deliberately.
 
-Do not fix a held-out extraction miss to improve the held-out score. The standing rule is in
-`scripts/make_holdout_scripts.py`.
+The eval harness (`eval/`, 50 gold + 12 held-out scripts, the runner and the OCR benchmark)
+was removed in the UI-rewrite strip. `docs/EVALUATION.md` still reports its last numbers and
+is now a **historical record** — the commands in it will not run. If extraction quality is
+measured again, restore the harness from the `Baseline` commit rather than writing a new one,
+and keep its standing rule: do not fix a held-out miss to improve the held-out score.
 
 ## Things that will bite you
 
@@ -50,5 +53,8 @@ Do not fix a held-out extraction miss to improve the held-out score. The standin
   `GET /openai/v1/models` before changing `groq_model`.
 - **`ruff format` will reflow the whole tree** if run on a codebase it has not formatted.
   That is fine, but do it in its own commit.
-- **The eval harness is part of the test suite** (`tests/test_eval_harness.py`). A regression
-  in hallucination rate or red-flag sensitivity fails `make test`, not just `make eval`.
+- **Three tests are dormant, not deleted.** `test_contrast_tokens.py`,
+  `test_colour_vision_deficiency.py` and the crop-geometry assertion in `test_bbox_geometry.py`
+  skip themselves while the frontend is a blank shell, and **re-arm automatically** the moment
+  `frontend/src/design/theme.css` and `frontend/src/kiosk/SourceCrop.tsx` exist again. Read
+  their docstrings before writing those files — they name the exact bugs they caught.

@@ -30,10 +30,24 @@ import math
 import re
 from pathlib import Path
 
+import pytest
+
 FRONTEND = Path(__file__).resolve().parents[1] / "frontend" / "src"
 THEME = FRONTEND / "design" / "theme.css"
 GLYPH = FRONTEND / "design" / "ui" / "StateGlyph.tsx"
 BANNER = FRONTEND / "physician" / "RedFlagBanner.tsx"
+
+# The UI is being rebuilt from scratch (see the "Strip the old UI" commit). This guard is
+# NOT retired — it re-arms by itself the moment the new frontend ships a theme.css at the
+# path below. Deleting it instead would have quietly dropped an accessibility gate that no
+# one would think to re-add.
+if not THEME.exists():  # pragma: no cover - frontend rebuild in progress
+    pytest.skip(
+        "frontend/src/design/theme.css does not exist yet — rebuild in progress. This "
+        "suite re-arms automatically when the new theme lands.",
+        allow_module_level=True,
+    )
+
 
 #: ΔE below this means two samples read as the same colour at a glance.
 CONFUSABLE = 10.0

@@ -86,18 +86,3 @@ def test_the_misreading_is_high_confidence_not_low() -> None:
             f"the pipeline now reads this correctly as {entity.text!r} — a real improvement. "
             "Keep the fixture; relax this assertion."
         )
-
-
-def test_a_judge_is_shown_this_case() -> None:
-    """It is in the demo script, because seeing it beats being told about it."""
-    from app.api.routes_demo import CASES
-
-    case = next((c for c in CASES if c.id == "photo-misread"), None)
-    assert case is not None, "the 5-to-S demo case is gone"
-    assert case.document == FIXTURE.name
-    joined = " ".join(case.watch_for).lower()
-    assert "5" in joined and "smg" in joined
-    assert "0.94" in joined or "confident" in joined, (
-        "the demo case no longer tells the judge that the error was a CONFIDENT one, which "
-        "is the whole reason it is worth showing"
-    )

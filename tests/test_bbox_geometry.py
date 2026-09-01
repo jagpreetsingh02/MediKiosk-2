@@ -272,13 +272,17 @@ def test_crop_positioning_uses_a_percentage_model_that_works_on_both_axes() -> N
     the element is there, it is just showing the wrong part of the page. So this asserts the
     technique instead, and names the trap.
     """
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "frontend"
-        / "src"
-        / "kiosk"
-        / "SourceCrop.tsx"
-    ).read_text(encoding="utf-8")
+    component = (
+        Path(__file__).resolve().parents[1] / "frontend" / "src" / "kiosk" / "SourceCrop.tsx"
+    )
+    if not component.exists():  # pragma: no cover - frontend rebuild in progress
+        # The UI was torn down for a rebuild. This assertion is NOT retired: it re-arms the
+        # moment SourceCrop.tsx exists again, which is exactly when bug 3 could come back.
+        pytest.skip(
+            "frontend/src/kiosk/SourceCrop.tsx has not been rebuilt yet. Re-read the "
+            "docstring above before writing it — marginTop is the trap."
+        )
+    source = component.read_text(encoding="utf-8")
 
     assert "backgroundPositionX" in source and "backgroundPositionY" in source, (
         "the crop no longer positions each axis independently"

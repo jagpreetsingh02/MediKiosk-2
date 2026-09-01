@@ -100,8 +100,8 @@ app/
   fhir/          r4.py (R4B models, stamped 4.0.1), bundle.py, outcomes.py
   auth/ audit/   ported from SIH 25026 — see docs/PORTED.md
   api/           33 endpoints
-eval/            50 gold scripts + 12 held-out + runner + OCR benchmark
-frontend/src/    kiosk/ (patient) and physician/ (review) — one component per file
+frontend/src/    Vite + React + TS. BEING REBUILT FROM SCRATCH — currently a blank shell
+                 plus lib/api.ts, the typed client for the API above. One component per file.
 ```
 
 ---
@@ -111,10 +111,9 @@ frontend/src/    kiosk/ (patient) and physician/ (review) — one component per 
 ```bash
 make setup        # venv + pip + npm
 make demo         # API + frontend, one command, no Docker needed
-make test         # 180+ tests
+make test         # 395 tests
 make lint         # ruff + mypy + tsc, all must be clean
-make eval         # 50 gold scripts + 12 held-out + the gap between them
-make check        # lint + test + eval-strict — run before committing
+make check        # lint + test — run before committing
 ```
 
 Python is **plain `venv` + `pip`** (no uv, no poetry). SQLite by default so everything runs

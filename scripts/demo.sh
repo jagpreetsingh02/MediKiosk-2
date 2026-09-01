@@ -58,10 +58,12 @@ cat <<BANNER
   ────────────────────────────────────────────────────────────────
    MediKiosk is running
 
-     Kiosk (patient)       http://127.0.0.1:5173/
-     Physician review      http://127.0.0.1:5173/physician
+     Frontend              http://127.0.0.1:5173/
      API docs              http://127.0.0.1:8000/docs
      What is mocked        http://127.0.0.1:8000/about
+
+   The UI is mid-rebuild — the frontend is a blank Vite + React shell and the
+   routes below it are being rebuilt from supplied designs. The API is whole.
 
    Demo login
      Patient   any listed ABHA address, OTP 123456

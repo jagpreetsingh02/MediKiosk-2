@@ -161,6 +161,15 @@ async def client(tmp_path, monkeypatch):
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http,
         app.router.lifespan_context(app),
     ):
+        # The demo patient used to arrive via the app's own startup hook. That hook is gone
+        # — a real database must not be handed a synthetic patient merely for booting — so
+        # the fixture seeds it, which is where a fixture belonged all along.
+        from app.modules.encounter.seed import seed_demo_patient
+
+        async with db_module.get_sessionmaker()() as seed_db:
+            await seed_demo_patient(seed_db)
+            await seed_db.commit()
+
         yield http
 
     db_module.get_engine.cache_clear()

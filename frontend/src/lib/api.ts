@@ -195,29 +195,6 @@ export interface Coding {
   display: string;
 }
 
-export interface DemoCase {
-  id: string;
-  title: string;
-  shows: string;
-  language: string;
-  ayush: boolean;
-  document: string | null;
-  watchFor: string[];
-}
-
-export interface DemoLoadResult {
-  case: DemoCase;
-  sessionRef: string;
-  answered: number;
-  spokenTurns: number;
-  degradedToTouch: number;
-  factsRecorded: number;
-  priority: Priority;
-  redFlags: string[];
-  contradictions: number;
-  document: { documentId: string; factsRecorded: number; needsVerification: number } | null;
-}
-
 export interface Contradiction {
   contradictionId: string;
   ruleId: string;
@@ -396,7 +373,6 @@ export interface PatientContext {
   note?: string;
 }
 
-
 // ------------------------------------------------------- the clinical report
 
 export interface LabPoint {
@@ -465,28 +441,6 @@ export interface ClinicalReport {
   };
   counts: { encounters: number; observations: number; medicationEvents: number };
   notice: string;
-}
-
-export interface Inspect {
-  sessionRef: string;
-  stateMachine: {
-    currentNode: string; currentSection: string | null; turnsTaken: number;
-    askable: number; declined: number; degradedToTouch: number; note: string;
-  };
-  facts: {
-    active: number; superseded: number; byTier: Record<string, number>;
-    withoutSource: number; absences: number;
-  };
-  redFlags: { rulesEvaluated: number; fired: string[]; priority: string; note: string };
-  contradictions: number;
-  consent: { scopes: string[]; ref: string | null };
-  backends: {
-    llm: { name: string; offline: boolean };
-    speech: { name: string; offline: boolean };
-    ocr: string;
-  };
-  audit: { intact: boolean; events: number };
-  inspectLatencyMs: number;
 }
 
 export interface QueueEntry {
@@ -1007,8 +961,6 @@ export const api = {
     return URL.createObjectURL(await response.blob());
   },
 
-  inspect: (ref: string) => request<Inspect>(`/api/v1/sessions/${ref}/inspect`),
-
   patientContext: (ref: string) =>
     request<PatientContext>(`/api/v1/sessions/${ref}/patient-context`),
 
@@ -1128,25 +1080,6 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ identifier, password }) },
     ),
 
-  /** Guest mode: a real synthetic record with the full seeded history. No account. */
-  startGuest: () =>
-    request<{
-      patientRef: string;
-      displayName: string;
-      isSynthetic: boolean;
-      encounters: number;
-      notice: string;
-    }>('/api/v1/demo/guest', { method: 'POST' }),
-  resetGuest: (patientRef: string) =>
-    request<{
-      patientRef: string;
-      displayName: string;
-      wasReset: boolean;
-      identical?: boolean;
-      countsBefore?: Record<string, number>;
-      countsAfter?: Record<string, number>;
-    }>(`/api/v1/demo/guest/${patientRef}/reset`, { method: 'POST' }),
-
   /** The deterministic brief. Two calls on unchanged data return identical bytes. */
   brief: (patientRef: string) => request<Brief>(`/api/v1/patients/${patientRef}/brief`),
   patientBrief: (patientRef: string, encounterRef?: string) =>
@@ -1182,12 +1115,6 @@ export const api = {
       `/api/v1/patients/${patientRef}/encounters/${encounterRef}/facts/${factRef}`,
     ),
 
-  demoCases: () => request<{ cases: DemoCase[]; notice: string }>('/api/v1/demo/cases'),
-  loadDemoCase: (caseId: string, sessionRef: string) =>
-    request<DemoLoadResult>(`/api/v1/demo/cases/${caseId}/load`, {
-      method: 'POST',
-      body: JSON.stringify({ sessionRef }),
-    }),
   summary: (ref: string, prose = false) =>
     request<Summary>(`/api/v1/sessions/${ref}/summary?prose=${prose}`),
   factDetail: (ref: string, factId: string) =>

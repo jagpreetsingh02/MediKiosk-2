@@ -18,7 +18,6 @@ from app import __version__
 from app.api import (
     routes_account,
     routes_audit,
-    routes_demo,
     routes_dialogue,
     routes_documents,
     routes_patient,
@@ -95,12 +94,6 @@ async def lifespan(app: FastAPI):
         await session.commit()
         log.info("startup.terminology", systems=len(loaded))
 
-        from app.modules.encounter.seed import seed_demo_patient
-
-        seeded = await seed_demo_patient(session)
-        await session.commit()
-        log.info("startup.demo_patient", **{k: v for k, v in seeded.items() if k != "documents"})
-
         from app.modules.consent.session import sweep_expired
 
         swept = await sweep_expired(session)
@@ -156,7 +149,6 @@ app.include_router(routes_session.router)
 app.include_router(routes_dialogue.router)
 app.include_router(routes_documents.router)
 app.include_router(routes_physician.router)
-app.include_router(routes_demo.router)
 app.include_router(routes_patient.router)
 app.include_router(mock_idp.router)
 

@@ -1,5 +1,18 @@
 # Evaluation
 
+> **HISTORICAL RECORD — the harness this describes no longer exists.**
+>
+> `eval/`, the 50 gold scripts, the 12 held-out scripts, the runner and the OCR benchmark were
+> removed in the UI rewrite. Every command below (`make eval`, `make eval-strict`,
+> `python -m eval.ocr_bench`) will fail. **The numbers are kept because they were really
+> measured** — on the development set *and* the held-out set, and the gap between them is the
+> honest part. Nothing here has been re-run since removal, so treat every figure as a
+> point-in-time result, not a current one.
+>
+> To measure again, restore the harness from the `Baseline` commit rather than writing a new
+> one — the held-out rule only means something if the scripts are the original ones.
+
+
 *Numbers below were produced by `python -m eval.runner --both` on 2026-08-23, commit at the
 time of writing. Reproduce with one command; nothing here is hand-copied.*
 

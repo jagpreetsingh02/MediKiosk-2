@@ -62,7 +62,7 @@ build if violated.
 
 ## Measured results
 
-`make eval` reproduces all of this. Full methodology and caveats: **[docs/EVALUATION.md](docs/EVALUATION.md)**.
+These numbers are a **historical record**: the eval harness was removed in the UI rewrite and `make eval` no longer exists. Methodology and caveats, as measured at the time: **[docs/EVALUATION.md](docs/EVALUATION.md)**. The harness is recoverable from the `Baseline` commit.
 
 | Metric | Target | Development (n=50) | **Held-out (n=12)** |
 |---|---|---|---|
