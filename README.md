@@ -18,15 +18,22 @@ be reviewed, edited and confirmed.
 
 ```bash
 make setup     # python3.12 venv + pip + npm  (no uv, no poetry, no Docker)
-make demo      # API on :8000, kiosk and physician screen on :5173
+./start.sh     # API on :10101, frontend on :10100  (or: make demo)
 ```
 
 | | |
 |---|---|
-| Kiosk (patient) | http://127.0.0.1:5173/ |
-| Physician review | http://127.0.0.1:5173/physician |
-| API docs | http://127.0.0.1:8000/docs |
-| **What is mocked** | http://127.0.0.1:8000/about |
+| Frontend | http://localhost:10100 |
+| API docs | http://localhost:10101/docs |
+| **What is mocked** | http://localhost:10101/about |
+
+Not 5173/8000: several copies of this project sit side by side and those defaults collide,
+which silently serves a *different* checkout than the one being edited. `start.sh` refuses to
+attach to a port another copy owns and names the directory that holds it.
+
+The UI is mid-rebuild — the hero is the only screen so far, so the kiosk and physician routes
+are not yet reachable. `WEB_ONLY=1 ./start.sh` skips the API when only the UI is being worked
+on.
 
 **Demo login** — patient: any listed ABHA address, OTP `123456`. Staff: any name, role
 `clinician`.

@@ -9,7 +9,7 @@ export PYTHONPATH := .
 
 help:
 	@echo "make setup        create the venv and install everything"
-	@echo "make demo         run the API and the frontend together (one command)"
+	@echo "make demo         run the API and the frontend together (./start.sh)"
 	@echo "make test         run the whole test suite"
 	@echo "make lint         ruff + mypy + tsc"
 	@echo "make check        lint + test  (run this before committing)"
@@ -21,8 +21,10 @@ setup:
 	cd frontend && npm install --silent
 	@echo "Ready. Now run: make demo"
 
+# One entry point, so the ports cannot drift apart between the two. See start.sh's header
+# for why this project does not use 5173/8000.
 demo:
-	./scripts/demo.sh
+	./start.sh
 
 # ---------------------------------------------------------------- demo fallback
 # Presentation only, and never automatic. See docker-compose.demo.yml for why it exists.
@@ -44,10 +46,10 @@ supabase-check:
 	@$(PY) scripts/check_supabase.py
 
 api:
-	$(PY) -m uvicorn app.main:app --reload --port 8000
+	$(PY) -m uvicorn app.main:app --reload --port $${API_PORT:-10101}
 
 web:
-	cd frontend && npm run dev
+	cd frontend && VITE_PORT=$${WEB_PORT:-10100} npm run dev
 
 test:
 	$(PY) -m pytest tests/ -q
