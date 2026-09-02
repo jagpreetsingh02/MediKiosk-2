@@ -1,13 +1,16 @@
+import Hero from '@/hero/Hero';
+
 /**
- * Blank slate. The previous UI was removed wholesale; the hero section, the design tokens
- * and every component are being rebuilt from supplied designs.
+ * The shell. Currently the hero and nothing else — the remaining sections and the kiosk /
+ * physician routes are being supplied and land here as they arrive.
  *
- * The backend contract is already wired — see `src/lib/api.ts`.
+ * The hero's two buttons take handlers rather than hrefs so that no route is invented before
+ * it exists; wire them here when the intake and sign-in screens are built.
  */
 export default function App() {
   return (
-    <main className="min-h-screen grid place-items-center">
-      <p className="text-sm opacity-60">MediKiosk — frontend rebuild in progress.</p>
+    <main className="min-h-screen">
+      <Hero />
     </main>
   );
 }

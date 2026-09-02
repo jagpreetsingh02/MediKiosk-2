@@ -1,7 +1,23 @@
+/* shadcn's variables first: an @import must precede every other statement.
+   They live in components/ui/ because check_no_raw_colours.py exempts that folder and
+   would fail the build on these values here. See that file's header. */
+@import './components/ui/shadcn-tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens land here. `scripts/check_no_raw_colours.py` and
-   `tests/test_contrast_tokens.py` both re-arm the moment src/design/theme.css exists, so
-   keep the palette there rather than inlining colour literals in components. */
+/* The MediKiosk palette — the `--mk-*` tokens — belongs in src/design/theme.css, which does
+   not exist yet. Creating it re-arms tests/test_contrast_tokens.py and
+   tests/test_colour_vision_deficiency.py, which require the full token set to pass WCAG AA.
+   Until then, colour literals are confined to the two folders the checker exempts:
+   src/components/ui/ (vendored) and src/hero/ (design source). */
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
