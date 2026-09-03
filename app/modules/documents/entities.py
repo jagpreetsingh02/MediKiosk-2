@@ -214,11 +214,69 @@ def _route_from(text: str) -> str | None:
     return None
 
 
+def _fullwidth_table() -> dict[int, str]:
+    """Fullwidth and CJK punctuation → their ASCII equivalents.
+
+    A fixed table rather than `unicodedata.normalize("NFKC", …)` on purpose. NFKC would do
+    this and a great deal more — it recomposes Devanagari nukta forms, expands ligatures and
+    rewrites fractions — and this text becomes `DocumentSpan.verbatim`, the provenance a
+    physician clicks through to. Touching scripts we have no reason to touch, in a field
+    whose whole promise is "this is what the paper said", is not a trade worth making for a
+    punctuation fix. U+FF01–FF5E is a contiguous block that maps to ASCII by a constant
+    offset, so this is exact, provable, and cannot alter Devanagari, Tamil or anything else.
+    """
+    table = {code: chr(code - 0xFEE0) for code in range(0xFF01, 0xFF5F)}
+    table[0x3000] = " "  # ideographic space
+    table[0x3001] = ","  # 、
+    table[0x3002] = "."  # 。
+    return table
+
+
+_FULLWIDTH = _fullwidth_table()
+
+
+def normalise_ocr_text(raw: str) -> str:
+    """Fold fullwidth punctuation and digits before anything tries to parse them.
+
+    GOT-OCR2 is multilingual and emits fullwidth forms where a classical engine emits ASCII —
+    observed on the prescription fixtures as `Dr. R. Sharma，MBBS MD（Gen Med）`. Every regex
+    in this module is written against ASCII punctuation, so `（Gen Med）` is not the
+    parenthesised text `(Gen Med)` to any of them, and a fullwidth digit is not a dose.
+
+    ⛔ IT CANNOT FIX A MISREAD GLYPH, AND MUST NOT TRY. The same fixture also produced
+    `fasti口g` — U+53E3 substituted for `n`. That is a recognition error, not a compatibility
+    variant, and mapping arbitrary CJK ideographs onto Latin letters would be inventing
+    content that was never on the page. It stays wrong, visibly, and the confidence attached
+    to it is what routes it to a human.
+    """
+    return raw.translate(_FULLWIDTH)
+
+
+def _cue_value(raw: str) -> str:
+    """The text following a cue label, or empty when the line held only the label.
+
+    ⛔ THIS EXISTS BECAUSE A BARE `":"` WAS REACHING THE RECORD AS A DIAGNOSIS.
+
+    `DIAGNOSIS_CUE` ends in `[:\\-–]?\\s*(?P<text>.+)`, and the separator is optional. Given a
+    line that is *just* the label — `"Diagnosis:"`, which is what happens whenever the line
+    detector puts the heading and its value on separate lines — the optional separator
+    matched empty and `.+` happily captured the colon. The result was an ExtractedEntity of
+    kind `diagnosis` whose text was `":"`, which then counted as a found diagnosis, took the
+    `return found` early exit, and reported 0.00 recall against a truth file expecting
+    "Type 2 diabetes mellitus with hypertension".
+
+    Measured on `prescription_photo_handheld.jpg`. Engine-independent: it is a property of
+    the regex and the line grouping, not of any particular OCR backend.
+    """
+    value = raw.strip(" \t.;,:-–—")
+    return value if any(character.isalnum() for character in value) else ""
+
+
 def extract_from_block(
     block: OCRBlock, page: int, *, sex: str | None = None
 ) -> list[ExtractedEntity]:
     """Parse one OCR line. May return several entities; usually returns none."""
-    text = block.text.strip()
+    text = normalise_ocr_text(block.text).strip()
     if len(text) < 3:
         return []
 
@@ -241,14 +299,18 @@ def extract_from_block(
 
     diagnosis = DIAGNOSIS_CUE.search(text)
     if diagnosis:
-        term = diagnosis.group("text").strip(" .;,")
+        # `_cue_value` rather than a bare strip: a label-only line must yield NOTHING, not a
+        # punctuation mark dressed as a diagnosis. See that function.
+        term = _cue_value(diagnosis.group("text"))
         if term:
             found.append(_entity("diagnosis", term, {"cue": diagnosis.group(0)[:24]}))
             return found
 
     procedure = PROCEDURE_CUE.search(text)
     if procedure:
-        term = procedure.group("text").strip(" .;,")
+        # Same guard as the diagnosis cue above, and for the same reason: "Procedure:" alone
+        # on a line is a heading, not a procedure the patient underwent.
+        term = _cue_value(procedure.group("text"))
         if term:
             found.append(_entity("procedure", term, {}))
             return found

@@ -4,12 +4,19 @@
 #
 # ⛔ PORTS ARE NOT THE DEFAULTS, AND THAT IS DELIBERATE.
 #
-# Four copies of this project sit side by side under Vibe_Coding/ — SIH_test, "SIH_test
-# backend", "SIH_test copy" and "SIH_test copy 2" — and at the time of writing "SIH_test copy"
-# was already serving vite on 5173 and uvicorn on 8000. Sharing those ports means the browser
-# silently shows a DIFFERENT COPY of the product than the one being edited, which is a
-# genuinely confusing hour to lose. This project owns its own pair and refuses to start rather
-# than attach to someone else's.
+# Several copies of this project sit side by side under Vibe_Coding/ — SIH_test, "SIH_test
+# backend", "SIH_test copy", "SIH_test copy 2" and this one — and at the time of writing
+# "SIH_test copy" was already serving vite on 5173 and uvicorn on 8000. Sharing those ports
+# means the browser silently shows a DIFFERENT COPY of the product than the one being edited,
+# which is a genuinely confusing hour to lose. This project owns its own pair and refuses to
+# start rather than attach to someone else's.
+#
+# The banner below names the directory it is ACTUALLY running from, derived at runtime. It
+# used to hardcode "SIH_test copy 2" — a different checkout — so the one line whose job is to
+# tell you which copy you are looking at was telling you the wrong one. The same
+# copied-rather-than-created origin left every console script in .venv/bin/ with a shebang
+# pointing at a sibling's interpreter, which silently ran `make lint` and `make test` under
+# another project's packages until it was found and repaired.
 #
 # Override either at will:
 #     WEB_PORT=4000 API_PORT=4001 ./start.sh
@@ -152,7 +159,7 @@ fi
 cat <<BANNER
 
   ────────────────────────────────────────────────────────────────
-   MediKiosk — "SIH_test copy 2"
+   MediKiosk — "$(basename "$ROOT")"
 
      Frontend            http://localhost:${WEB_PORT}
 ${API_LINES}

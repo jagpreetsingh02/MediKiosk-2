@@ -104,14 +104,60 @@ Because the cap is the page mean and the page mean is by construction below the 
 alone sent 67% on `discharge/degraded`. That is more conservative than before, in the
 direction the system already errs.
 
-n=7 image fixtures is a thin sample. The separation is wide and clean, but it is one run over
-three document families; the threshold deserves re-checking against more degraded captures
-before anyone treats 0.72 as load-bearing.
+**⚠️ 0.72 IS PROVISIONAL AND MUST NOT BE TREATED AS FINAL.** n=7 image fixtures across three
+document families, one run. The separation is wide (0.34) and clean, but it is a handful of
+synthetic documents, and the degraded class is three files. Re-validate against real degraded
+captures — genuinely bad phone photos, poor light, motion blur, creased paper — before anyone
+relies on this number. If the classes turn out to overlap in the wild, the threshold moves;
+that is expected, not a failure of the design.
 
-GOT-OCR2 also zeroed diagnosis recall on two fixtures, traced to it emitting full-width CJK
-punctuation (`，`, `（）`) that `entities.py`'s regex does not match. Unfixed, and out of scope
-here — it is an argument for normalising the model's output before extraction, not against
-the routing.
+### Accepted, on the record
+
+Two consequences were put to the maintainer and accepted deliberately, so they are decisions
+rather than oversights:
+
+* **A degraded page sending ~100% of its entities to review is the intended default.** Flag
+  more, not less, is the right bias for a clinical system. That rate is not to be reduced
+  later as an optimisation without an explicit decision to do so.
+* **The ~90s/page cost on a degraded upload is a known limitation at this stage.** It is not
+  to be optimised away in the backend now. The correct response is a clear "processing" state
+  in the kiosk UI when that work is built, so a slow read does not look like a broken one.
+
+### Correction — the diagnosis-recall failure was misdiagnosed
+
+An earlier revision of this ADR blamed GOT-OCR2's full-width CJK punctuation (`，`, `（）`) for
+the two `dx recall 0.00` results. **That was wrong**, and the real cause is worse and
+engine-independent.
+
+On `prescription_photo_handheld.jpg` the line detector put the heading and its value on
+separate lines: `"Diagnosis:"` and `"Type 2 diabetes mellitus with hypertension"`.
+`DIAGNOSIS_CUE` ends in `[:\-–]?\s*(?P<text>.+)` with the separator **optional**, so against
+the heading alone it matched the label, the separator matched empty, and `.+` captured the
+bare colon. The result was an `ExtractedEntity` of kind `diagnosis` whose text was `":"` —
+which then took the early `return found` and scored 0.00 against the truth file. A punctuation
+mark was entering a clinical record as a diagnosis, and it would have done so for **any**
+backend whose line grouping split a heading from its value.
+
+Fixed in `entities.py` by `_cue_value()`, which requires alphanumeric content before a cue
+emits anything, applied to both the diagnosis and procedure cues.
+
+The full-width punctuation is real but was a *different* problem, fixed alongside it:
+`normalise_ocr_text()` folds U+FF01–FF5E and three CJK marks to ASCII before any regex sees
+them, because every pattern in that module is written against ASCII. It is a fixed table
+rather than NFKC on purpose — this text becomes `DocumentSpan.verbatim`, and NFKC would
+recompose Devanagari and expand ligatures in provenance a physician clicks through to.
+
+Neither fix recovers the diagnosis on that fixture, and that is left alone deliberately. The
+value is on its own line with no cue, so nothing identifies it; Tesseract scores 1.00 there
+because *its* TSV grouping keeps the two together. The residual gap is therefore a
+**segmentation** artifact, and the honest fix is in `segment.py` — merging a short label-only
+band into the one below it — not in `entities.py`. Joining a heading to whatever line happens
+to follow would risk labelling unrelated text as a diagnosis, which is the same class of
+defect just removed. Left as known work.
+
+The same fixture also produced `fasti口g` (U+53E3 substituted for `n`). That is a recognition
+error, not a compatibility variant, and normalisation deliberately does not touch it: mapping
+arbitrary CJK ideographs onto Latin letters would invent content that was never on the page.
 
 ---
 

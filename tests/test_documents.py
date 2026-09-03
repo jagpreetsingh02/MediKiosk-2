@@ -14,6 +14,7 @@ from app.modules.documents.backends import TesseractOCR, TextLayerOCR
 from app.modules.documents.entities import (
     document_date,
     extract_entities,
+    normalise_ocr_text,
     parse_date,
 )
 from app.modules.documents.pipeline import ingest, verify_entity
@@ -115,6 +116,82 @@ def test_analyte_label_containing_digits_is_not_split() -> None:
     assert len(entities) == 1
     assert entities[0].detail["value"] == 8.2
     assert entities[0].detail["rangeFlag"] == "high"
+
+
+def _entities_from(text: str):  # type: ignore[no-untyped-def]
+    """Everything parsed out of a plain-text document, both lanes."""
+    result = TextLayerOCR().read(
+        text.encode("utf-8"), filename="doc.txt", media_type="text/plain"
+    )
+    confident, needs_check = extract_entities(result)
+    return list(confident) + list(needs_check)
+
+
+def test_a_label_only_line_does_not_become_a_diagnosis() -> None:
+    """⛔ THE REGRESSION, NAMED. A bare ':' was reaching the record as a diagnosis.
+
+    `DIAGNOSIS_CUE` ends in `[:\\-–]?\\s*(?P<text>.+)` with the separator OPTIONAL, so on a
+    line that is just the heading — which happens whenever the line detector puts the label
+    and its value on separate lines — the separator matched empty and `.+` captured the
+    colon. Measured on `prescription_photo_handheld.jpg`: an entity of kind `diagnosis` and
+    text `":"`, which took the early `return found` and scored 0.00 recall against a truth
+    file expecting "Type 2 diabetes mellitus with hypertension".
+
+    Engine-independent — a property of the regex and the line grouping, not of a backend.
+    """
+    entities = _entities_from("Diagnosis:\nType 2 diabetes mellitus with hypertension")
+    diagnoses = [e for e in entities if e.kind == "diagnosis"]
+    assert not any(not any(c.isalnum() for c in e.text) for e in diagnoses), (
+        f"a punctuation-only diagnosis reached the record: {[e.text for e in diagnoses]}"
+    )
+
+
+def test_a_label_only_line_does_not_become_a_procedure() -> None:
+    entities = _entities_from("Procedure:\nAppendicectomy")
+    procedures = [e for e in entities if e.kind == "procedure"]
+    assert not any(not any(c.isalnum() for c in e.text) for e in procedures)
+
+
+def test_a_real_diagnosis_line_still_parses() -> None:
+    """The guard must not cost the normal case, which is the label and value on one line."""
+    entities = _entities_from("Diagnosis: Community acquired pneumonia")
+    assert any(
+        e.kind == "diagnosis" and "pneumonia" in e.text.lower() for e in entities
+    ), [e.text for e in entities if e.kind == "diagnosis"]
+
+
+def test_fullwidth_punctuation_is_folded_before_parsing() -> None:
+    """GOT-OCR2 emits fullwidth forms; every regex here is written against ASCII.
+
+    Observed on the prescription fixtures as `Dr. R. Sharma，MBBS MD（Gen Med）`. Without the
+    fold, `（Gen Med）` is not parenthesised text to any pattern in this module and a
+    fullwidth digit is not a dose.
+    """
+    entities = _entities_from("Ｄｉａｇｎｏｓｉｓ：Community acquired pneumonia")
+    assert any(
+        e.kind == "diagnosis" and "pneumonia" in e.text.lower() for e in entities
+    ), [e.text for e in entities]
+
+
+def test_folding_leaves_every_other_script_alone() -> None:
+    """⛔ NOT NFKC, AND THIS IS WHY.
+
+    This text becomes `DocumentSpan.verbatim` — the provenance a physician clicks through
+    to. NFKC would recompose Devanagari, expand ligatures and rewrite fractions; the fixed
+    fullwidth table cannot touch anything outside U+FF01-FF5E and three CJK marks.
+    """
+    for sample in ("रोगी को बुखार है", "நோயாளிக்கு காய்ச்சல்", "Metformin 500mg"):
+        assert normalise_ocr_text(sample) == sample
+
+
+def test_a_misread_glyph_is_left_wrong_rather_than_guessed() -> None:
+    """`fasti口g` (U+53E3 for `n`) is a RECOGNITION error, not a compatibility variant.
+
+    Mapping arbitrary CJK ideographs onto Latin letters would invent content that was never
+    on the page. It stays wrong and visible; the confidence attached to it is what routes it
+    to a human.
+    """
+    assert normalise_ocr_text("fasti口g") == "fasti口g"
 
 
 def test_headings_are_not_read_as_medications() -> None:

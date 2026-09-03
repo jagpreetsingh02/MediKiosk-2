@@ -317,8 +317,12 @@ Separately measured by `python -m eval.ocr_bench` against `data/fixtures/documen
 ⚠️ **These numbers ARE current**, unlike the rest of this document. `eval/ocr_bench.py` was
 restored from the `Baseline` commit for this run, extended to take a backend list and to
 include `prescription_photo_handheld.jpg` (the only real camera capture in the fixture set),
-and re-run on 2026-09-03. Raw output: `eval/reports/ocr_bench.json`. Reproduce with
+and re-run on 2026-09-03. Reproduce with
 `NEURAL_OCR_ENABLED=true python -m eval.ocr_bench textlayer,tesseract,got-ocr2`.
+
+The table below is the record of that run. `eval/reports/ocr_bench.json` is **not** — it is
+gitignored, and the bench overwrites it on every invocation, so whatever is in it locally
+reflects the last command anyone ran rather than this result.
 
 Image variants only — the digital-PDF column is unchanged and still goes to `textlayer`.
 
@@ -347,13 +351,19 @@ probabilities measure the language model's certainty, not the paper's legibility
 why a re-read is capped at the page confidence Tesseract measured rather than carrying the
 model's own.
 
-The `dx 0.00` on `prescription/handheld` is real: GOT-OCR2 emits full-width CJK punctuation
-(`，`, `（）`) that `entities.py`'s regex does not match. Known, unfixed, recorded here rather
-than quietly averaged away.
+**The `dx 0.00` was investigated afterwards, and the first explanation here was wrong.** It
+was attributed to GOT-OCR2's full-width punctuation; the actual cause is that the line
+detector split `"Diagnosis:"` from its value, and `DIAGNOSIS_CUE`'s optional separator then
+let `.+` capture the bare colon — emitting a diagnosis entity whose text was `":"`. Engine-
+independent, and a punctuation mark reaching a clinical record. Fixed (`_cue_value`), along
+with the genuine but separate full-width folding (`normalise_ocr_text`). Neither recovers the
+diagnosis on that fixture: the value sits on its own uncued line, which makes the residual gap
+a segmentation problem, not an extraction one. See ADR-0015.
 
-n=7 image fixtures across three document families. The class separation is wide (clean
-0.84–0.91, degraded 0.10–0.50) but it is one run, and the 0.72 threshold deserves re-checking
-against more degraded captures before it is treated as settled.
+⚠️ **n=7 image fixtures across three document families, one run, synthetic documents.** The
+class separation is wide (clean 0.84–0.91, degraded 0.10–0.50), but the degraded class is
+three files. **0.72 is provisional** and must be re-validated against real degraded captures
+before it is treated as settled.
 
 The number to look at is the **verification-lane rate**: the share of extracted entities
 routed to a human. It rises from 0% on a clean PDF to 60% on a degraded lab photo. That rise
