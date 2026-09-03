@@ -1,18 +1,22 @@
-"""Module B — the `OCRBackend` protocol and two implementations.
+"""Module B — the `OCRBackend` protocol and its implementations.
 
-Two, deliberately, so they can be *benchmarked* rather than argued about. `eval/ocr_bench.py`
-runs both over the same fixture set and reports character accuracy, entity recall and mean
-confidence per backend. Choosing an OCR engine on a slide is a guess; choosing one on a table
-is a decision.
+Several, deliberately, so they can be *benchmarked* rather than argued about. Choosing an OCR
+engine on a slide is a guess; choosing one on a table is a decision.
 
 * **TextLayerOCR** — pulls the embedded text layer out of a digital PDF. Perfect accuracy when
   there is one (a lab portal printout, an e-prescription), useless when there is not. Zero
   dependencies beyond `pypdf`.
-* **TesseractOCR** — real OCR over rasterised pages. Handles scans and photos. Needs the
+* **TesseractOCR** — classical OCR over rasterised pages. Handles scans and photos. Needs the
   `tesseract` binary; degrades to a clear error rather than silently returning nothing.
+* **GotOcr2OCR** / **MedicalPrescriptionOCR** — the neural engines, in `neural.py`. Printed
+  documents and handwritten prescriptions respectively. Optional (`torch` + `transformers`),
+  off by default, and they take over from Tesseract — never from TextLayerOCR. `_image_engine`
+  below explains why that distinction is not a detail.
 
-Both return the same `OCRPage` shape, and both must supply a per-block confidence and bounding
-box, because Invariant 2 requires a page and a bbox for every `document`-tier fact.
+Every backend returns the same `OCRPage` shape, and every one must supply a per-block
+confidence and bounding box, because Invariant 2 requires a page and a bbox for every
+`document`-tier fact. Neither neural model produces either natively, which is what `segment.py`
+and `neural._confidence_from` exist to answer honestly — see ADR-0015.
 """
 
 from __future__ import annotations
@@ -477,7 +481,22 @@ def _normalise(raw: tuple[int, int, int, int], page_w: int, page_h: int) -> Boun
     )
 
 
-_BACKENDS: dict[str, type] = {"textlayer": TextLayerOCR, "tesseract": TesseractOCR}
+def _registry() -> dict[str, type]:
+    """Every engine by name, neural ones included.
+
+    The neural import is deferred rather than done at module scope because `neural.py`
+    imports the dataclasses above — a top-level import here would be a cycle. It is a plain
+    module import (no torch, no weights); the cost of a missing `transformers` is paid inside
+    the backend, where it becomes an `available = False` with a reason.
+    """
+    from app.modules.documents import neural  # noqa: PLC0415
+
+    return {
+        "textlayer": TextLayerOCR,
+        "tesseract": TesseractOCR,
+        "got-ocr2": neural.GotOcr2OCR,
+        "prescription-trocr": neural.MedicalPrescriptionOCR,
+    }
 
 
 
@@ -512,13 +531,40 @@ def backend_for(media_type: str, filename: str, *, requested: str | None = None)
         (".png", ".jpg", ".jpeg", ".webp", ".heic")
     )
     if is_image:
-        tesseract = get_ocr_backend("tesseract")
-        if not tesseract.available:
-            raise UpstreamUnavailable(
-                "This kiosk cannot read photographs at the moment."
-            )
-        return tesseract
+        return _image_engine()
     return get_ocr_backend("textlayer")
+
+
+def _image_engine() -> OCRBackend:
+    """GOT-OCR2 when neural OCR is on and loadable, Tesseract otherwise.
+
+    ⛔ `textlayer` IS NOT IN THIS LADDER, AND THAT IS THE POINT.
+
+    It is tempting to read "use the neural model by default" as "use it for everything", but
+    `textlayer` is not a competing recogniser — it lifts the embedded text layer out of a
+    digital PDF. That is a transcription, exact by construction, with true glyph geometry and
+    no model. An e-prescription or a lab-portal printout already contains its own perfect
+    text; running a 1.1 GB vision model over it would be slower, less accurate, and would
+    replace measured glyph boxes with detected line boxes. So dispatch stays on what the file
+    IS, and the neural engine takes over exactly where recognition was actually happening:
+    photographs and scans, which is where Tesseract was.
+
+    The fallback is deliberate and reported. If `torch` is absent or the flag is off, the
+    kiosk keeps working on Tesseract rather than refusing an upload — the same shape as
+    `speech/registry.py` falling back to the local backend.
+    """
+    got = get_ocr_backend("got-ocr2")
+    if got.available:
+        return got
+
+    reason = getattr(got, "unavailable_reason", None)
+    if reason:
+        log.info("ocr.neural_unavailable", falling_back_to="tesseract", why=reason)
+
+    tesseract = get_ocr_backend("tesseract")
+    if not tesseract.available:
+        raise UpstreamUnavailable("This kiosk cannot read photographs at the moment.")
+    return tesseract
 
 
 def read_document(data: bytes, *, filename: str, media_type: str, requested: str | None = None):
@@ -534,7 +580,14 @@ def read_document(data: bytes, *, filename: str, media_type: str, requested: str
     except UnsupportedMedia as unsupported:
         if requested:
             raise
-        fallback = get_ocr_backend("tesseract")
+        # `_image_engine()` rather than tesseract by name: a scanned PDF should retry on
+        # whichever engine is actually reading images, which is GOT-OCR2 when neural OCR is
+        # on. Hardcoding tesseract here would have quietly excluded the new default from the
+        # single most common retry path in the product.
+        try:
+            fallback = _image_engine()
+        except UpstreamUnavailable:
+            raise unsupported from None
         if not fallback.available or fallback.name == backend.name:
             raise
         log.info(
@@ -568,17 +621,27 @@ def read_document(data: bytes, *, filename: str, media_type: str, requested: str
 def get_ocr_backend(name: str | None = None) -> OCRBackend:
     from app.core.config import settings
 
+    registry = _registry()
     chosen = name or settings.ocr_backend
-    backend_class = _BACKENDS.get(chosen)
+    backend_class = registry.get(chosen)
     if backend_class is None:
-        raise ValidationError(f"Unknown OCR backend {chosen!r}. Known: {sorted(_BACKENDS)}.")
+        raise ValidationError(f"Unknown OCR backend {chosen!r}. Known: {sorted(registry)}.")
     return backend_class()  # type: ignore[return-value]
 
 
 def available_backends() -> list[dict[str, object]]:
-    """What `/about` reports, so a demo audience can see which engines are actually live."""
-    out = []
-    for name, backend_class in _BACKENDS.items():
+    """What `/about` reports, so a demo audience can see which engines are actually live.
+
+    `reason` is carried for the engines that can be unavailable for more than one cause. "Not
+    available" alone is what sends an operator hunting for a GPU when the real answer is an
+    unset flag or a gated repository nobody requested access to.
+    """
+    out: list[dict[str, object]] = []
+    for name, backend_class in _registry().items():
         instance = backend_class()
-        out.append({"name": name, "available": instance.available})
+        entry: dict[str, object] = {"name": name, "available": bool(instance.available)}
+        reason = getattr(instance, "unavailable_reason", None)
+        if reason:
+            entry["reason"] = reason
+        out.append(entry)
     return out

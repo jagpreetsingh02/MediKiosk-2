@@ -50,6 +50,14 @@ the shape of the record:
 2. **Smooth prose within a summary section** (`app/modules/summary/prose.py`). Output goes
    through the same token check; one unsupported word and the deterministic bullets are kept.
 
+**OCR is a third model, and it is not an exception to the above.** `modules/documents/neural.py`
+reads documents with GOT-OCR2 and a TrOCR prescription model when `NEURAL_OCR_ENABLED` is set.
+They are *transcribers*, not deciders: they cannot choose a question, cannot fire a red flag,
+and cannot change the shape of the record. Everything downstream of them is unchanged —
+`entities.py` still parses by regex, every box is measured by `segment.py` rather than claimed
+by the model, and every handwritten reading still needs a named human before it becomes a fact.
+See ADR-0015. Off by default; `torch` is deliberately not in `requirements.txt`.
+
 **Everything else is a rule**, including the parts that look like they want a model:
 
 | Task | Why a rule | Where |
@@ -57,6 +65,7 @@ the shape of the record:
 | Which question comes next | Reproducible, works offline, cannot skip the allergy question | `modules/dialogue/machine.py` |
 | Emergency detection | A missed escalation is the only unacceptable error; rules are auditable by a clinician | `redflags/engine.py` + `data/ontology/redflags.yaml` |
 | Prescription / lab parsing | A prescription line has a grammar; regex is exact, instant, and gives character offsets for the bbox | `modules/documents/entities.py` |
+| Where a line *is* on a page | A measurement, not a reading. The neural OCR models produce no geometry, so a detector measures every box (ADR-0015) | `modules/documents/segment.py` |
 | Out-of-range flagging | A range comparison, not an interpretation | `modules/documents/ranges.py` |
 | Summary assembly | Predictable structure is what makes a summary readable in 90 seconds | `modules/summary/assemble.py` |
 
@@ -90,7 +99,9 @@ app/
                  projection.py (ledger -> history), no_diagnosis.py
   modules/
     dialogue/    Module A — ontology loader, deterministic machine, answers, voice
-    documents/   Module B — OCRBackend protocol + 2 impls, entities, ranges, timeline, pipeline
+    documents/   Module B — OCRBackend protocol + 4 impls (2 classical in backends.py, 2
+                 neural in neural.py), segment (line detection), imaging, entities, ranges,
+                 timeline, pipeline
     summary/     Module C — assemble, prose, traceability (the gate), generate
     consent/     Module D — consent, session lifecycle + purge, HIS push
   redflags/      the rule engine (Invariant 3)

@@ -163,7 +163,34 @@ class Settings(BaseSettings):
     vosk_model_dir: str | None = None
 
     # --- documents (Module B) ---
-    ocr_backend: Literal["textlayer", "tesseract"] = "textlayer"
+    #: The engine used when nothing dispatches by content. `backend_for()` overrides this for
+    #: every patient upload — see its docstring for why a single configured default is what
+    #: made photographs unreadable.
+    ocr_backend: Literal["textlayer", "tesseract", "got-ocr2", "prescription-trocr"] = (
+        "textlayer"
+    )
+    #: NEURAL OCR — off by default, and the default is the honest one.
+    #:
+    #: Both models below need `torch` + `transformers`, which are ~3 GB installed and are
+    #: deliberately NOT in requirements.txt (see the OPTIONAL block there). With them absent
+    #: the backends report `available = False` with a reason and `backend_for()` routes to
+    #: tesseract, exactly as it did before they existed. Nothing degrades silently.
+    neural_ocr_enabled: bool = False
+    #: Printed and scanned documents. Apache-2.0, ungated, ~1.1 GB of weights.
+    got_ocr_model: str = "stepfun-ai/GOT-OCR-2.0-hf"
+    #: Handwritten prescriptions. ⚠️ GATED on HuggingFace — it needs an approved access
+    #: request AND `HF_TOKEN` below. Without both, `from_pretrained` raises and the backend
+    #: reports unavailable rather than pretending to read handwriting.
+    prescription_ocr_model: str = "khedim/Medical-Prescription-OCR"
+    #: `auto` picks cuda, then mps (Apple Silicon), then cpu. Pin it to reproduce a result.
+    neural_ocr_device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    #: A hard ceiling on how many detected lines get fed to a recogniser for one page.
+    #: A VLM call per line is seconds of CPU; a page of noise segmented into 400 "lines"
+    #: would hang the upload with no way for the patient to know why.
+    neural_ocr_max_lines: int = 120
+    #: Read access for a gated repository. NOT a general HuggingFace credential — it is only
+    #: ever sent to `from_pretrained`, and it never reaches a log or the browser.
+    hf_token: str | None = None
     #: Anything at or below this goes to the handwriting lane and is never auto-merged.
     ocr_low_confidence_threshold: float = 0.72
     #: Largest upload the kiosk will accept. This value already existed and was NEVER

@@ -162,8 +162,25 @@ def decode(data: bytes, *, filename: str) -> Image.Image:
     return image
 
 
-def prepare(data: bytes, *, filename: str) -> Prepared:
-    """Decode and condition one photograph for OCR. See the module docstring for the order."""
+def prepare(data: bytes, *, filename: str, threshold: bool = True) -> Prepared:
+    """Decode and condition one photograph for OCR. See the module docstring for the order.
+
+    ⛔ `threshold=False` IS FOR THE NEURAL BACKENDS, AND IT IS NOT A TUNING KNOB.
+
+    Step 6 binarises the page, which is what Tesseract wants: it is a classical engine and a
+    clean two-tone image is the input its heuristics were built for. A vision-language model
+    is the opposite case. GOT-OCR2 and TrOCR were trained on photographs and scans — natural
+    greyscale, with the intensity gradients that antialiasing, ink bleed and paper texture
+    produce — so handing one a hard-thresholded image discards the very signal it learned to
+    read, and it does so *silently*: the output is still fluent text, just more of it wrong.
+
+    Everything before step 6 is wanted by both kinds of engine and is unchanged. The EXIF
+    rotation, the resolution floor and the deskew are not engine-specific, and skipping them
+    for a neural backend would reintroduce the exact failures `decode()` and `_estimate_skew`
+    exist to prevent.
+
+    The default is `True` so every existing caller keeps the behaviour it was verified with.
+    """
     image = decode(data, filename=filename)
     source_format = str(getattr(image, "format", "") or "unknown")
 
@@ -207,7 +224,8 @@ def prepare(data: bytes, *, filename: str) -> Prepared:
         )
 
     # --- 6. Adaptive threshold --------------------------------------------
-    image = _adaptive_threshold(image)
+    if threshold:
+        image = _adaptive_threshold(image)
 
     prepared = Prepared(
         image=image,
@@ -227,8 +245,26 @@ def prepare(data: bytes, *, filename: str) -> Prepared:
         exif_rotated=rotated,
         deskew_deg=prepared.deskewed_degrees,
         too_small=too_small,
+        thresholded=threshold,
     )
     return prepared
+
+
+def binarise(image: Image.Image) -> Image.Image:
+    """A two-tone view of a page, at the SAME dimensions, for a detector.
+
+    `prepare(threshold=False)` exists so a vision model gets the natural greyscale it was
+    trained on. A line detector wants the opposite, and both are right: they are different
+    consumers of one page. `segment.py` measures geometry on this view and the recogniser
+    reads the unthresholded one, which is sound precisely because thresholding does not
+    resize — a box measured here means the same thing there.
+
+    Without it, projection segmentation finds NOTHING on a handheld photo: the local-mean
+    threshold is what removes the lighting gradient, and against a global cutoff the shadowed
+    half of a page is darker than the ink on the bright half. Measured on
+    `prescription_photo_handheld.jpg`, which went from 0 detected lines to 13.
+    """
+    return _adaptive_threshold(image)
 
 
 def to_png(prepared: Prepared) -> bytes:
@@ -382,6 +418,7 @@ __all__ = [
     "MIN_LONG_EDGE",
     "TARGET_LONG_EDGE",
     "Prepared",
+    "binarise",
     "decode",
     "describe_skew",
     "prepare",

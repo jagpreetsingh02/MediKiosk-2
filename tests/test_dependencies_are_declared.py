@@ -46,7 +46,13 @@ ALIASES = {
 #: Imported lazily inside a try/except with a documented fallback, so absence is HANDLED
 #: rather than fatal. `vosk` is the deliberate case: no model on a fresh clone means the
 #: confidence is recorded as unavailable, which is the honest branch.
-OPTIONAL = {"vosk"}
+#:
+#: `torch` and `transformers` are the same bargain at a much larger scale: ~3 GB installed,
+#: for two OCR backends that report `available = False` with a reason when they are missing
+#: and hand the page to Tesseract. Pinning them would put that weight in the deploy image for
+#: every user, including the ones who never enable NEURAL_OCR_ENABLED. `neural._torch_available`
+#: is the single import probe, and `test_neural_ocr.py` asserts absence stays non-fatal.
+OPTIONAL = {"vosk", "torch", "transformers"}
 
 
 def _declared() -> set[str]:

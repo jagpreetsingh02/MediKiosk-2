@@ -54,3 +54,24 @@ pillow-heif>=1.0      # iPhones shoot HEIC by default; Pillow cannot open one wi
 #
 # Nobody should need 40MB to clone this repo, which is why it is a comment and not a pin.
 # vosk>=0.3.44
+#
+# ---------------------------------------------------------------------------------------
+# NEURAL OCR (app/modules/documents/neural.py). Also optional, and for the same reason at a
+# much larger scale: torch + transformers are ~3 GB installed, before ~1.1 GB of GOT-OCR2
+# weights and ~1.3 GB of TrOCR weights are pulled at first use. Pinning them would put all
+# of that into the Render image for every user, including everyone who never turns the
+# feature on — and cold-start time on that image is the demo, not a footnote.
+#
+# Absent, both backends report `available = False` WITH A REASON and `backend_for()` routes
+# images to Tesseract exactly as before. Nothing degrades silently; see
+# `tests/test_neural_ocr.py`, which asserts that absence stays non-fatal.
+#
+#   pip install 'torch>=2.2' 'transformers>=4.49'
+#   # in .env:
+#   NEURAL_OCR_ENABLED=true
+#
+# `khedim/Medical-Prescription-OCR` is additionally GATED: request access on HuggingFace and
+# set HF_TOKEN, or that backend stays unavailable and says so.
+#
+# torch>=2.2
+# transformers>=4.49

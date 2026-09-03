@@ -38,11 +38,21 @@ APP = Path(__file__).resolve().parents[1] / "app"
 FRONT_DOOR = APP / "modules" / "documents" / "pipeline.py"
 
 #: Modules that ARE the OCR layer, and so may import each other freely.
+#:
+#: ⚠️ ADDING TO THIS SET IS NOT A WAY PAST THE TEST. A module belongs here only if it is part
+#: of the engine layer itself — something `pipeline.py` reaches THROUGH, not something that
+#: reaches OCR for its own purposes. `neural.py` holds two `OCRBackend` implementations and
+#: `segment.py` is the detector they get their geometry from; both sit below `backends.py`,
+#: neither is reachable from a route, and neither would be a back door if it imported one.
+#: A module that merely *wants* to read a document does not qualify — that is the entire
+#: failure this file exists to prevent.
 OCR_LAYER = {
     APP / "modules" / "documents" / "backends.py",
     APP / "modules" / "documents" / "entities.py",
     APP / "modules" / "documents" / "imaging.py",
+    APP / "modules" / "documents" / "neural.py",
     APP / "modules" / "documents" / "render.py",
+    APP / "modules" / "documents" / "segment.py",
     APP / "modules" / "documents" / "timeline.py",
     APP / "modules" / "documents" / "ranges.py",
 }
