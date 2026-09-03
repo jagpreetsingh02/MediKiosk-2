@@ -730,6 +730,10 @@ async def evidence_for_fact(
                 # read, what a person read it as, and whose name is on that reading.
                 "humanReading": e.human_reading,
                 "readBy": e.read_by,
+                # Which earlier visit a carried-forward fact came from. Without it,
+                # "recorded in a previous encounter" is an assertion the physician cannot
+                # follow, which is the same as having no provenance at all.
+                "priorEncounterRef": e.prior_encounter_ref,
             }
             for e in evidence
         ],
@@ -756,6 +760,10 @@ async def open_contradictions(db: AsyncSession, patient_id: int) -> list[dict[st
             "documentSide": row.side_b_json,
             "clarifyingQuestion": row.clarifying_question,
             "status": row.status,
+            # Which detector found it. `cross_encounter` is the "you told me no medicines and
+            # your own file says metformin" case, and a physician reads that differently from
+            # a disagreement inside today's visit.
+            "scope": row.scope,
         }
         for row in rows
     ]

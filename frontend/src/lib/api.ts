@@ -195,10 +195,27 @@ export interface Coding {
   display: string;
 }
 
+/** What the physician did with a fact. NOT the same axis as `tier`. */
+export type ReviewStatus = 'pending' | 'confirmed' | 'rejected' | 'edited';
+
+/** Where a durable fact came from, on the durable side. Wider than `Tier` by design. */
+export type FactOrigin =
+  | 'patient_stated'
+  | 'document'
+  | 'prior_encounter'
+  | 'physician_entered';
+
 export interface Contradiction {
   contradictionId: string;
   ruleId: string;
   label: string;
+  /**
+   * Which detector produced this. Read THIS rather than inferring the shape from the side
+   * names: for a `dosage_conflict` both sides are documents, and `patientSide` is a leftover
+   * from when only the patient-denies-a-document case existed. Each side's `origin` carries
+   * the true source label.
+   */
+  kind?: 'denial' | 'cross_tier' | 'dosage_conflict';
   patientSide: ContradictionSide;
   documentSide: ContradictionSide;
   clarifyingQuestion: string | null;
@@ -511,6 +528,9 @@ export interface BriefLine {
   evidenceKinds: string[];
   /** `document` | `voice` | `touch` | `typed` — what the drawer actually renders on. */
   evidenceModalities: string[];
+  /** The physician-review axis. Rejected lines never reach the brief at all. */
+  reviewStatus?: ReviewStatus;
+  origin?: FactOrigin;
 }
 
 export interface BriefEvidence {
@@ -527,6 +547,8 @@ export interface BriefEvidence {
   handwritten: boolean;
   humanReading: string | null;
   readBy: string | null;
+  /** Set when `sourceType === 'prior_encounter'`: the visit this was carried forward from. */
+  priorEncounterRef?: string | null;
 }
 
 export interface FactEvidence {
@@ -538,6 +560,11 @@ export interface FactEvidence {
   confidence: number | null;
   confidenceStatus: string;
   confirmedByPhysician: boolean;
+  /** The physician-review axis. `confirmedByPhysician` cannot tell pending from rejected. */
+  reviewStatus?: ReviewStatus;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  origin?: FactOrigin;
   evidence: BriefEvidence[];
 }
 
@@ -929,6 +956,55 @@ export const api = {
     }),
 
   queue: () => request<{ queue: QueueEntry[]; count: number }>('/api/v1/queue'),
+
+  /**
+   * Move one durable fact along the review axis. The ONLY way `reviewStatus` changes.
+   *
+   * The backend owns the transition rules and this client does not second-guess them:
+   * `rejected` is terminal, `edited` requires a value and does NOT imply confirmation, and a
+   * no-op is refused. An illegal transition comes back as a 400 with the reason in words —
+   * render that rather than pre-filtering the buttons on a guess about what is legal.
+   */
+  reviewFact: (
+    patientRef: string,
+    encounterRef: string,
+    factRef: string,
+    body: { status: ReviewStatus; value?: unknown; reason?: string },
+  ) =>
+    request<{
+      factRef: string;
+      reviewStatus: ReviewStatus;
+      reviewedBy: string | null;
+      reviewedAt: string | null;
+      origin: FactOrigin;
+      displayValue: string | null;
+    }>(
+      `/api/v1/patients/${patientRef}/encounters/${encounterRef}/facts/${factRef}/review`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Open contradictions for a patient, both scopes. Nothing here is auto-resolved. */
+  patientContradictions: (patientRef: string) =>
+    request<{ count: number; contradictions: Record<string, unknown>[]; note?: string }>(
+      `/api/v1/patients/${patientRef}/contradictions`,
+    ),
+
+  /**
+   * The FHIR R4 bundle a commit WOULD send, without sending it.
+   *
+   * ⚠️ PRE-COMMIT ONLY. The capture session is purged the moment the encounter is committed
+   * (Invariant 6), so this returns 410 Gone afterwards. That is the invariant working, not a
+   * failure — the preview belongs on the review screen, before the gate.
+   */
+  fhirPreview: (sessionRef: string) =>
+    request<{
+      committed: boolean;
+      notice: string;
+      fhirVersion: string | null;
+      resourceCounts: Record<string, number>;
+      entries: number;
+      bundle: Record<string, unknown>;
+    }>(`/api/v1/sessions/${sessionRef}/fhir/preview`),
   contradictions: (ref: string) =>
     request<{ count: number; contradictions: Contradiction[]; note: string }>(
       `/api/v1/sessions/${ref}/contradictions`,
@@ -1081,7 +1157,11 @@ export const api = {
     ),
 
   /** The deterministic brief. Two calls on unchanged data return identical bytes. */
-  brief: (patientRef: string) => request<Brief>(`/api/v1/patients/${patientRef}/brief`),
+  brief: (patientRef: string, encounterRef?: string) =>
+    request<Brief>(
+      `/api/v1/patients/${patientRef}/brief` +
+        (encounterRef ? `?encounter=${encounterRef}` : ''),
+    ),
   patientBrief: (patientRef: string, encounterRef?: string) =>
     request<PatientBrief>(
       `/api/v1/patients/${patientRef}/brief/patient`

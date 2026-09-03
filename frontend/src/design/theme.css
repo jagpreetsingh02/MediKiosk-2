@@ -1,0 +1,126 @@
+/* MediKiosk palette — the `--mk-*` tokens.
+ *
+ * ⛔ TWO TEST SUITES PARSE THIS FILE AND FAIL THE BUILD ON IT.
+ *
+ *   tests/test_contrast_tokens.py          every ink ratio, measured, WCAG AA
+ *   tests/test_colour_vision_deficiency.py caution vs critical under deuteranopia
+ *
+ * They read the literals below, resolve var() chains, composite the translucent fills over
+ * the ground they actually sit on, and compute real ratios. So this is not a mood board: a
+ * colour that looks right and measures wrong does not ship. Values must be `#rgb`, `#rrggbb`
+ * or `rgba(...)` — the parser understands nothing else, so no `oklch()` and no `hsl()`.
+ *
+ * ── Why the ground is light ───────────────────────────────────────────────────────────
+ * ADR-0013 says the hero is the visual specification for the whole product, and the hero
+ * this project ships today is light: white ground, near-black type. The ADR
+ * text describes a DIFFERENT hero — dark, glass, video-backed — which was removed in the UI
+ * strip, so its material is stale while its principle is not. The principle is what is
+ * honoured here: one visual language, and the surfaces differ in DENSITY, not in theme.
+ *
+ * `--mk-void` is therefore near-white rather than near-black. Nothing in the tests requires a
+ * dark ground; they require the ground to be opaque and the ratios to hold. Keeping the name
+ * avoids a rename across two test files for no behavioural gain.
+ *
+ * ── The rule the ink tokens encode ────────────────────────────────────────────────────
+ * `*-ink` tokens are for READING — body copy, labels, values. They clear 4.5:1.
+ * Bare hue tokens are for GLYPHS and BOUNDARIES — icons, rules, chart marks. They clear 3:1
+ * and must never be used for body text. The split exists because a hue saturated enough to
+ * read as "caution" at 16px is not dark enough to read as prose, and one token cannot be
+ * both without failing one of the two jobs.
+ */
+
+:root {
+  /* ── ground and panes ──────────────────────────────────────────────────────────────
+   * PANE in the contrast test is `--mk-void` plus a 5% white fill, which is the raised
+   * card clinical text actually sits on. Every ink ratio below is measured against THAT,
+   * not against the bare ground, because measuring against the ground would flatter them.
+   */
+  --mk-void: #fbfbfa;
+  --mk-pane: rgba(255, 255, 255, 0.05);
+  --mk-line: rgba(24, 24, 27, 0.10);
+  --mk-line-strong: rgba(24, 24, 27, 0.18);
+
+  /* ── reading inks (≥ 4.5:1) ───────────────────────────────────────────────────────── */
+  --mk-ink-strong: #18181b;
+  --mk-ink: #27272a;
+  --mk-ink-muted: #52525b;
+  --mk-accent-ink: #3730a3;
+  --mk-danger-ink: #9f1239;
+  --mk-warm-ink: #713f12;
+  --mk-evidence-ink: #075985;
+
+  /* ── glyph and boundary hues (≥ 3:1, never body text) ──────────────────────────────
+   * Four meanings a clinician separates by colour before reading a word: accent (the
+   * product's own voice), caution, critical, and evidence/provenance. The contrast suite
+   * asserts they sit at least 40° apart in hue so they cannot be confused with each other.
+   *
+   * ⛔ NO GREEN OR TEAL, 80°-170°, ENFORCED. `test_no_green_remains_in_the_palette` scans
+   * every literal in this file, under any token name: "Green was the old accent and is
+   * gone." So the accent is periwinkle, and `--mk-status-ok` is a NEUTRAL rather than the
+   * reflexive clinical green — which is the better answer anyway. The absence of an alarm
+   * should not shout; only escalation earns a hue.
+   *
+   * Hues, measured: accent 244°, evidence 200°, warm 43°, danger 347°. Closest pair is
+   * accent/evidence at 44°, just clear of the 40° floor.
+   */
+  --mk-ink-subtle: #71717a;
+  --mk-accent: #4f46e5;
+  --mk-warm: #a16207;
+  --mk-danger: #e11d48;
+  --mk-evidence: #0284c7;
+
+  /* ── status pairs ──────────────────────────────────────────────────────────────────
+   * A red flag's text sits on the red flag's own tint, not on plain glass. The tint lifts
+   * the background and therefore REDUCES the contrast of the text on it, which is the
+   * pairing most likely to fail quietly — so the fg is darker than the bare hue above.
+   */
+  --mk-status-ok-bg: rgba(24, 24, 27, 0.06);
+  --mk-status-ok-fg: #3f3f46;
+  --mk-status-warn-bg: rgba(161, 98, 7, 0.14);
+  --mk-status-warn-fg: #713f12;
+  --mk-status-alert-bg: rgba(225, 29, 72, 0.12);
+  --mk-status-alert-fg: #881337;
+  --mk-status-info-bg: rgba(2, 132, 199, 0.12);
+  --mk-status-info-fg: #0c4a6e;
+
+  /* ── motion ────────────────────────────────────────────────────────────────────────
+   * ADR-0013's whole vocabulary: two durations, nothing else. Restraint is the point —
+   * a clinical surface that animates is a clinical surface that is hard to read quickly.
+   */
+  --mk-quick: 300ms;
+  --mk-settle: 500ms;
+}
+
+/* ── density, not theme ───────────────────────────────────────────────────────────────
+ * The kiosk is read at arm's length by someone who may be elderly, unwell, or reading a
+ * second language; the physician workspace is scanned in ninety seconds by someone who has
+ * done it forty times today. Same palette, same material, different information density.
+ */
+[data-surface='kiosk'] {
+  --mk-density-text: 1.125rem;
+  --mk-density-gap: 1.25rem;
+  --mk-density-radius: 14px;
+}
+
+[data-surface='clinical'] {
+  --mk-density-text: 0.9375rem;
+  --mk-density-gap: 0.75rem;
+  --mk-density-radius: 10px;
+}
+
+/* The raised pane itself, so a component says `mk-pane` rather than re-deriving the stack. */
+.mk-pane {
+  background-color: var(--mk-void);
+  background-image: linear-gradient(var(--mk-pane), var(--mk-pane));
+  border: 1px solid var(--mk-line);
+  border-radius: var(--mk-density-radius, 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
