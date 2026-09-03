@@ -55,7 +55,7 @@ test:
 	$(PY) -m pytest tests/ -q
 
 lint:
-	$(VENV)/bin/ruff check app tests scripts
+	$(VENV)/bin/ruff check app tests scripts workers
 	$(VENV)/bin/mypy app
 	$(PY) scripts/check_no_raw_colours.py
 	cd frontend && npx tsc --noEmit

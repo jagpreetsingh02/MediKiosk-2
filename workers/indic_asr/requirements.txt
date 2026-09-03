@@ -1,0 +1,24 @@
+# Dependencies for the IndicConformer ASR worker. DELIBERATELY ISOLATED from the main
+# MediKiosk venv: this stack is ~2 GB installed and pins onnxruntime, and the application
+# that runs the clinical product must not carry it. See README.md in this folder.
+#
+# Versions follow the model card's own installation instructions
+# (https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual):
+#     pip install transformers torchaudio "onnxruntime==1.20.1" "onnx==1.20.1"
+# `onnxruntime-gpu` from that line is omitted: there is no CUDA on this machine and the
+# model's own code selects CPUExecutionProvider when torch.cuda is unavailable.
+
+# The model is loaded through AutoModel + trust_remote_code; its custom code imports all
+# four of these directly (see model_onnx.py).
+transformers>=4.40
+torch>=2.2
+torchaudio>=2.2
+onnxruntime>=1.20.1
+huggingface_hub>=0.26
+numpy>=1.26
+
+# The worker's own HTTP surface. Kept minimal on purpose — it exposes /health and
+# /transcribe and nothing else.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9

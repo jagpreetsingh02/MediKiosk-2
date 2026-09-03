@@ -27,3 +27,8 @@ ui/dist/
 ui/.vite/
 output/
 .mypy_cache/
+
+# Local tool state. `hook.cache.json` records absolute paths of edited files — including
+# other checkouts on this machine — and `config.local.json` is a per-machine consent flag.
+# Neither is project configuration and neither should follow the repo to another machine.
+.impeccable/

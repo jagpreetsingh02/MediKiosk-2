@@ -51,7 +51,15 @@ export default function Consultation() {
 
   const [stage, setStage] = useState<Stage>('consent');
   const [sessionRef, setSessionRef] = useState<string | null>(null);
-  const [language] = useState('en');
+  // ⛔ THE LANGUAGE IS THE ROUTING SIGNAL, AND IT IS EXPLICIT ON PURPOSE.
+  //
+  // It is sent at session creation and stored on the session; the server uses it to choose
+  // between Whisper (English and anything unspecified) and IndicConformer (the 22 Indian
+  // languages it has heads for). There is NO detection anywhere: IndicConformer selects a
+  // per-language decoding head by name, so the choice has to be made before any audio is
+  // recognised — guessing from the transcript afterwards is already too late.
+  const [language, setLanguage] = useState('en');
+  const [languages, setLanguages] = useState<{ code: string; name: string }[]>([]);
 
   const [consent, setConsent] = useState<ConsentPresentation | null>(null);
   const [granted, setGranted] = useState<string[]>([]);
@@ -70,6 +78,13 @@ export default function Consultation() {
       setSessionRef(open.sessionRef);
       setStage('asking');
     }
+  }, []);
+
+  useEffect(() => {
+    api
+      .languages()
+      .then((r) => setLanguages(r.languages))
+      .catch(() => setLanguages([{ code: 'en', name: 'English' }]));
   }, []);
 
   useEffect(() => {
@@ -149,6 +164,38 @@ export default function Consultation() {
         {stage === 'consent' ? (
           <>
             <Heading level={1}>Before we start</Heading>
+            {languages.length > 1 ? (
+              <Pane className="mt-6">
+                <p
+                  className="text-sm font-medium"
+                  style={{ color: 'var(--mk-ink-strong)' }}
+                >
+                  Which language would you like to use?
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {languages.map((entry) => {
+                    const on = entry.code === language;
+                    return (
+                      <button
+                        key={entry.code}
+                        type="button"
+                        onClick={() => setLanguage(entry.code)}
+                        className="rounded-full border px-4 py-2 text-sm transition-colors"
+                        style={{
+                          borderColor: on ? 'var(--mk-accent)' : 'var(--mk-line-strong)',
+                          backgroundColor: on ? 'var(--mk-status-info-bg)' : 'transparent',
+                          color: on ? 'var(--mk-accent-ink)' : 'var(--mk-ink)',
+                          transitionDuration: 'var(--mk-quick)',
+                        }}
+                      >
+                        {entry.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Pane>
+            ) : null}
+
             {!consent ? (
               <Spinner label="Loading the consent notice…" />
             ) : (

@@ -162,6 +162,24 @@ class Settings(BaseSettings):
     bhashini_pipeline_id: str | None = None
     vosk_model_dir: str | None = None
 
+    # --- IndicConformer (AI-2) ---
+    #: Indian-language ASR runs in its own process with its own virtualenv — the model needs
+    #: torch + onnxruntime and ~2.6 GB resident, which must not sit inside the API that
+    #: serves the clinical product. See `workers/indic_asr/`.
+    #:
+    #: OFF BY DEFAULT. With this false, every language routes to Whisper exactly as AI-1 left
+    #: it; nothing about the working voice path changes until the worker is deliberately run.
+    indic_asr_enabled: bool = False
+    indic_asr_url: str = "http://127.0.0.1:10102"
+    #: `ctc` measured at 58 ms median against `rnnt` at 74 ms on a 2.26 s Hindi utterance,
+    #: with identical text. CTC is one greedy pass; RNNT decodes autoregressively.
+    indic_asr_decoding: Literal["ctc", "rnnt"] = "ctc"
+    #: Generous: a cold worker may still be loading 2.6 GB when the first request lands.
+    indic_asr_timeout: float = 120.0
+    #: Short, because this is asked BEFORE routing a patient's audio. A slow health check
+    #: would add its own latency to every Indic turn.
+    indic_asr_health_timeout: float = 2.0
+
     # --- documents (Module B) ---
     #: The engine used when nothing dispatches by content. `backend_for()` overrides this for
     #: every patient upload — see its docstring for why a single configured default is what

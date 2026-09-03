@@ -95,3 +95,34 @@ async def seeded_patient(db_session):
     patient = await get_patient_by_abha(db_session, abha_ref=demo_abha_ref())
     assert patient is not None
     return db_session, patient
+
+
+# ---------------------------------------------------------------- no live network
+#
+# ⛔ THE MODULE DOCSTRING PROMISES "no network". THIS ENFORCES IT.
+#
+# It was not true. AI-2 moved the transcription seam from `routes_dialogue.get_speech` to
+# `registry.get_speech`, and three tests in `test_whisper_stt.py` went on patching the old
+# name. Two failed loudly. The third — the one asserting that a dead provider degrades the
+# question instead of 500ing — kept PASSING, because the unpatched route called the real Groq
+# API, got a 400, and degraded for real. The assertion held; the thing it claimed to test
+# never ran. A false pass like that is worse than a failure, and it only happened because a
+# unit test could reach the internet at all.
+#
+# Loopback stays open: the session store probes 127.0.0.1 and is expected to fail there.
+@pytest.fixture(autouse=True)
+def _no_live_network(monkeypatch):
+    import socket
+
+    real_connect = socket.socket.connect
+
+    def guarded(self, address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in ("127.0.0.1", "::1", "localhost"):
+            raise AssertionError(
+                f"A test tried to open a live network connection to {host!r}. Tests must "
+                "stub the backend; a real call can make a test pass for the wrong reason."
+            )
+        return real_connect(self, address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded)

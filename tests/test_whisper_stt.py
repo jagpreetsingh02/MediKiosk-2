@@ -387,9 +387,9 @@ async def test_audio_route_sends_the_bytes_to_the_server_backend(api, monkeypatc
     accepted the text. This asserts the bytes actually arrive at `SpeechBackend.transcribe`
     with their real media type — the browser records webm, and the container has to survive.
     """
-    import app.api.routes_dialogue as routes
+    import app.speech.registry as registry
 
-    monkeypatch.setattr(routes, "get_speech", lambda: _StubWhisper())
+    monkeypatch.setattr(registry, "get_speech", lambda: _StubWhisper())
     token, session_ref = await _open_session(api)
 
     step = (await api.get(
@@ -474,14 +474,14 @@ async def test_a_dead_provider_degrades_that_question_instead_of_500ing(
     api, monkeypatch
 ) -> None:
     """§9: the patient must still be able to answer. No crash, no fabricated transcript."""
-    import app.api.routes_dialogue as routes
+    import app.speech.registry as registry
     from app.core.errors import UpstreamUnavailable
 
     class _Dead:
         def transcribe(self, audio, *, language, media_type):
             raise UpstreamUnavailable("Groq Whisper call failed")
 
-    monkeypatch.setattr(routes, "get_speech", lambda: _Dead())
+    monkeypatch.setattr(registry, "get_speech", lambda: _Dead())
     token, session_ref = await _open_session(api)
     step = (await api.get(
         f"/api/v1/sessions/{session_ref}/dialogue/next", headers=_auth(token)
@@ -513,9 +513,9 @@ async def test_a_whisper_answer_still_produces_provenance(api, monkeypatch) -> N
     The transcript's own words become the span, and the ASR confidence rides with the fact.
     Nothing about the provenance architecture changes because the engine changed.
     """
-    import app.api.routes_dialogue as routes
+    import app.speech.registry as registry
 
-    monkeypatch.setattr(routes, "get_speech", lambda: _StubWhisper())
+    monkeypatch.setattr(registry, "get_speech", lambda: _StubWhisper())
     token, session_ref = await _open_session(api)
     step = (await api.get(
         f"/api/v1/sessions/{session_ref}/dialogue/next", headers=_auth(token)

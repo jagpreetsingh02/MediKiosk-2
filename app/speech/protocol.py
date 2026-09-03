@@ -56,6 +56,21 @@ class Transcript:
     model: str | None = None
     provider_model: str | None = None
 
+    #: How the graph executed, where that is a separate question from who hosted it.
+    #: ONNX Runtime is a runtime, not a provider, and flattening the two would make
+    #: "local/onnxruntime" and "local/vosk" indistinguishable.
+    runtime: str | None = None
+
+    # ---- routing honesty ------------------------------------------------------------
+    #
+    # ⛔ A FALLBACK MUST BE VISIBLE AS A FALLBACK. When a Hindi turn is routed to
+    # IndicConformer and the worker is down, Whisper answers instead — which is the right
+    # behaviour, and which must never be reported as IndicConformer having run. The fields
+    # above already name the engine that PRODUCED the words; these two say what was ASKED
+    # for, so the difference is legible rather than inferred.
+    requested_backend: str | None = None
+    fallback_used: bool = False
+
     @property
     def measured(self) -> bool:
         return self.confidence is not None
@@ -89,6 +104,9 @@ class Transcript:
             "provider": self.provider,
             "model": self.model,
             "providerModel": self.provider_model,
+            "runtime": self.runtime,
+            "requestedBackend": self.requested_backend,
+            "fallbackUsed": self.fallback_used,
         }
 
 

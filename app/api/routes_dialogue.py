@@ -34,7 +34,7 @@ from app.modules.dialogue.voice import (
     handle_spoken_answer,
 )
 from app.redflags.engine import evaluate, raise_priority
-from app.speech.registry import get_client_backend, get_speech
+from app.speech.registry import get_client_backend, get_speech, transcribe_routed
 
 log = get_logger(__name__)
 
@@ -226,7 +226,12 @@ async def answer_audio(
         raise ValidationError("The recording was empty. Please try again, or tap your answer.")
 
     try:
-        transcript = get_speech().transcribe(
+        # ⛔ THE ENGINE IS CHOSEN BY LANGUAGE, IN THE REGISTRY, NOT HERE. The session's
+        # language is the explicit signal — the patient picked it before consenting — and
+        # `transcribe_routed` sends Indic languages to IndicConformer, everything else to
+        # Whisper, and falls back visibly. This route stays ignorant of which engine ran;
+        # the Transcript it gets back says so truthfully.
+        transcript = transcribe_routed(
             audio, language=context.row.language, media_type=media_type
         )
     except (UpstreamUnavailable, ValidationError) as exc:
@@ -324,6 +329,8 @@ async def _record_spoken_answer(
             "sttBackend": transcript.backend,
             "sttProvider": transcript.provider,
             "sttModel": transcript.model,
+            "sttRequested": transcript.requested_backend,
+            "sttFallbackUsed": transcript.fallback_used,
         },
         response_summary={
             "accepted": outcome.accepted,
