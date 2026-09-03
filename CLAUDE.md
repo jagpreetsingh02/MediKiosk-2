@@ -41,10 +41,13 @@ something is mocked, unverified, or measured on synthetic data, say so in the sa
 the number — `/about` and `UPDATE.md` both do this deliberately.
 
 The eval harness (`eval/`, 50 gold + 12 held-out scripts, the runner and the OCR benchmark)
-was removed in the UI-rewrite strip. `docs/EVALUATION.md` still reports its last numbers and
-is now a **historical record** — the commands in it will not run. If extraction quality is
-measured again, restore the harness from the `Baseline` commit rather than writing a new one,
-and keep its standing rule: do not fix a held-out miss to improve the held-out score.
+was removed in the UI-rewrite strip. **`eval/ocr_bench.py` has since been restored** from the
+`Baseline` commit and re-run (2026-09-03) to choose between the OCR engines; it works, and its
+section of `docs/EVALUATION.md` is current. Everything else there — dialogue, red flags,
+summaries — is still a **historical record** whose commands will not run. If extraction
+quality is measured again, restore the rest of the harness from `Baseline` rather than writing
+a new one, and keep its standing rule: do not fix a held-out miss to improve the held-out
+score.
 
 ## Things that will bite you
 

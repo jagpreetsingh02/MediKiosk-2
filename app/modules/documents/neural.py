@@ -185,8 +185,27 @@ def _confidence_from(scores: Any) -> float:
     return map_logprob(float(finite.mean().item()))
 
 
+@functools.lru_cache(maxsize=4)
+def _recogniser_for(model_id: str, gated: bool) -> _Recogniser:
+    """One recogniser per model id, FOR THE LIFE OF THE PROCESS.
+
+    ⛔ WITHOUT THIS, EVERY UPLOAD RELOADS A GIGABYTE OF WEIGHTS.
+
+    `get_ocr_backend()` constructs a fresh backend on every call — `available_backends()`
+    alone does it four times per `/about` — and the recogniser used to be an instance
+    attribute, so the loaded model died with the backend that made it. Each patient upload
+    would have paid the full `from_pretrained` cost again: measured at several seconds from
+    a warm local cache, and a 1.1 GB download on the first one.
+
+    Caching the recogniser rather than the backend is deliberate. The backend stays cheap and
+    disposable, so `available` is still re-evaluated per call and a settings change is still
+    picked up; only the expensive, immutable thing is held.
+    """
+    return _Recogniser(model_id, gated=gated)
+
+
 class _Recogniser:
-    """Lazily-loaded HuggingFace model + processor. One instance per model id, per process.
+    """Lazily-loaded HuggingFace model + processor. Reached through `_recogniser_for`.
 
     Loading is deferred to the first `read()` rather than done in `__init__` so that
     constructing a backend — which `available_backends()` does on every `/about` call — never
@@ -257,9 +276,14 @@ class _Recogniser:
             from transformers import VisionEncoderDecoderModel  # noqa: PLC0415
 
             log.info("neural_ocr.using_vision_encoder_decoder", model=self.model_id)
-            return VisionEncoderDecoderModel.from_pretrained(self.model_id, **kwargs).to(
-                _device()
-            )
+            # Bound to an `Any` first, exactly as `auto_class` above already is. Naming the
+            # concrete class inline makes mypy resolve `from_pretrained` through the
+            # transformers wrapper as an unbound method wanting a `PreTrainedModel` as its
+            # first argument, which is not how it is called anywhere. The error is invisible
+            # unless transformers is actually installed, which is how it survived the first
+            # round of linting on a machine that did not have it.
+            model_class: Any = VisionEncoderDecoderModel
+            return model_class.from_pretrained(self.model_id, **kwargs).to(_device())
 
 
 # ---------------------------------------------------------------- shared page reading
@@ -402,7 +426,7 @@ class GotOcr2OCR:
     name = "got-ocr2"
 
     def __init__(self) -> None:
-        self._recogniser = _Recogniser(settings.got_ocr_model)
+        self._recogniser = _recogniser_for(settings.got_ocr_model, False)
         # A plain attribute, not a property: `OCRBackend` declares `available: bool`, and a
         # read-only property does not satisfy a mutable protocol member. `TesseractOCR` sets
         # it in `__init__` for the same reason, and a fresh instance is built per call.
@@ -477,7 +501,7 @@ class MedicalPrescriptionOCR:
     name = "prescription-trocr"
 
     def __init__(self) -> None:
-        self._recogniser = _Recogniser(settings.prescription_ocr_model, gated=True)
+        self._recogniser = _recogniser_for(settings.prescription_ocr_model, True)
         reason = _neural_unavailable_reason()
         if reason is None and not settings.hf_token:
             reason = (

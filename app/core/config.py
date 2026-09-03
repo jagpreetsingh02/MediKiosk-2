@@ -175,6 +175,10 @@ class Settings(BaseSettings):
     #: deliberately NOT in requirements.txt (see the OPTIONAL block there). With them absent
     #: the backends report `available = False` with a reason and `backend_for()` routes to
     #: tesseract, exactly as it did before they existed. Nothing degrades silently.
+    #:
+    #: Enabling this does NOT send every image to GOT-OCR2. `QualityRoutedOCR` re-reads only
+    #: the pages tesseract itself scored below `ocr_low_confidence_threshold`, because the
+    #: benchmark showed GOT-OCR2 losing on clean scans. See ADR-0015.
     neural_ocr_enabled: bool = False
     #: Printed and scanned documents. Apache-2.0, ungated, ~1.1 GB of weights.
     got_ocr_model: str = "stepfun-ai/GOT-OCR-2.0-hf"

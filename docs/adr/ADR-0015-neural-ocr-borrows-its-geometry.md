@@ -44,9 +44,81 @@ the embedded text layer out of a digital PDF, which is a transcription with exac
 geometry, so running a 1.1 GB model over it would be slower, less accurate, and would trade
 measured glyph boxes for detected line boxes.
 
-**Consequences.** One model call per detected line, capped by `NEURAL_OCR_MAX_LINES`. That is
-the cost of not fudging either value, and it is the main thing to revisit if throughput ever
-matters more than it does at a kiosk serving one patient at a time.
+---
+
+## Amendment — routing is conditional on measured page quality
+
+*Added after the benchmark was actually run. The original decision above stands; this
+replaces the "neural engine takes over for all images" half of it.*
+
+**Context.** The first version routed every image to GOT-OCR2 on the assumption it beat
+Tesseract on scans. `python -m eval.ocr_bench` over the image fixtures (n=7) says otherwise:
+
+| variant | tesseract med recall | GOT-OCR2 med recall |
+|---|---:|---:|
+| prescription / clean scan | **1.00** | **0.75** |
+| discharge / clean scan | 1.00 | 1.00 |
+| lab / clean scan | 1.00 | 1.00 |
+| prescription / degraded | 0.50 *(dose 0.50)* | **1.00** *(dose 1.00)* |
+| lab / degraded | inv 0.57 | **inv 0.71** |
+| discharge / degraded | 0.50 | 0.50 |
+
+Every gain is on degraded input; on a clean prescription scan GOT-OCR2 *loses a quarter of
+the medications*. A blanket replacement would have shipped a regression.
+
+Worse, GOT-OCR2 reported **0.87–1.00 confidence on every fixture** and sent **0%** to the
+verification lane — including `discharge/degraded`, where it recovered half the medications
+and Tesseract had sent 67% to a human. EVALUATION.md names Tesseract's confidence collapse as
+a *feature*: "it stays roughly as accurate and becomes less confident, and the low-confidence
+lane converts that into human review instead of into a wrong dosage." Adopting the model's
+own score would have destroyed that.
+
+**Decision.** Images get a fast Tesseract pass first. A page whose mean confidence is at or
+above `ocr_low_confidence_threshold` keeps that result. A page below it is re-read by
+GOT-OCR2, **and every block from the re-read is capped at the page's measured confidence**
+(`_bounded_by_page_quality`). `QualityRoutedOCR` holds both halves.
+
+The signal is Tesseract's own mean page confidence: already computed, one cheap pass, and it
+separated the classes with no overlap — clean at 0.84 / 0.90 / 0.90 / 0.91, degraded at
+0.10 / 0.34 / 0.50. The cut is 0.72, reusing `ocr_low_confidence_threshold` rather than
+inventing a constant: it already means "this reading is not trustworthy alone", and it sits
+inside the measured 0.34-wide gap. Moving that setting moves this decision too, which is
+intended — it is the same judgement about the same evidence.
+
+The cap is evidence combination, not a penalty. There are two independent measurements of one
+reading — how sure the model was of its tokens, and how legible the page was — and a claim
+that the reading is *correct* cannot exceed the weaker. So the record gets GOT-OCR2's better
+text at Tesseract's honest confidence, and the human review that confidence triggers.
+
+**Alternatives.** *Trust GOT-OCR2's own score* — 0% human review at 0.50 recall on
+`discharge/degraded`, a measured safety regression. *Flag every degraded-branch read
+wholesale* — nearly what the cap achieves in practice, but it discards a real signal for no
+gain. *Resolution or skew as the quality signal* — both already computed, and both miss:
+`prescription_photo_handheld.jpg` is 3024×4276 and well-lit, and Tesseract reads it at 0.90.
+
+**Consequences.** A degraded upload now costs a Tesseract pass *plus* ~90s/page of GOT-OCR2
+(measured on MPS, ~9s/line). Clean uploads are unchanged and pay nothing.
+
+Because the cap is the page mean and the page mean is by construction below the threshold,
+**a degraded page now sends essentially all of its entities to review** — 100% where Tesseract
+alone sent 67% on `discharge/degraded`. That is more conservative than before, in the
+direction the system already errs.
+
+n=7 image fixtures is a thin sample. The separation is wide and clean, but it is one run over
+three document families; the threshold deserves re-checking against more degraded captures
+before anyone treats 0.72 as load-bearing.
+
+GOT-OCR2 also zeroed diagnosis recall on two fixtures, traced to it emitting full-width CJK
+punctuation (`，`, `（）`) that `entities.py`'s regex does not match. Unfixed, and out of scope
+here — it is an argument for normalising the model's output before extraction, not against
+the routing.
+
+---
+
+**Consequences (original decision).** One model call per detected line, capped by
+`NEURAL_OCR_MAX_LINES`. That is the cost of not fudging either value, and it is the main thing
+to revisit if throughput ever matters more than it does at a kiosk serving one patient at a
+time.
 
 `torch` and `transformers` stay out of `requirements.txt`: ~3 GB installed for a feature that
 is off by default, on a deploy whose cold start is the demo. Absent, both backends report

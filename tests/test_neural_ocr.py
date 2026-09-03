@@ -17,9 +17,18 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from app.contracts.provenance import BoundingBox
 from app.core.config import settings
-from app.modules.documents import imaging, neural, segment
-from app.modules.documents.backends import available_backends, backend_for, get_ocr_backend
+from app.core.errors import UpstreamUnavailable
+from app.modules.documents import backends, imaging, neural, segment
+from app.modules.documents.backends import (
+    OCRBlock,
+    OCRPage,
+    OCRResult,
+    available_backends,
+    backend_for,
+    get_ocr_backend,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "data" / "fixtures" / "documents"
 
@@ -256,6 +265,198 @@ def test_images_fall_back_to_tesseract_when_neural_ocr_is_off() -> None:
 def test_an_explicit_request_still_wins() -> None:
     """The benchmark compares engines on identical inputs and must be able to pin one."""
     assert backend_for("image/png", "x.png", requested="got-ocr2").name == "got-ocr2"
+
+
+# ---------------------------------------------------------------- quality routing
+#
+# Measured by `python -m eval.ocr_bench`, image variants, n=7. The routing exists because
+# GOT-OCR2 is better on degraded input and WORSE on a clean prescription scan (med recall
+# 1.00 -> 0.75), so a blanket replacement would have been a regression. Tesseract's own mean
+# page confidence separated the two classes with no overlap: clean at 0.84/0.90/0.90/0.91,
+# degraded at 0.10/0.34/0.50. The cut is `ocr_low_confidence_threshold`, inside that gap.
+
+
+class _StubNeural:
+    """A neural backend that answers without torch, so these run on a bare clone."""
+
+    name = "got-ocr2"
+
+    def __init__(self, *, available: bool = True, blocks: tuple[OCRBlock, ...] | None = None):
+        self.available = available
+        self.unavailable_reason = None if available else "stubbed as unavailable"
+        self._blocks = blocks
+
+    def read(self, data: bytes, *, filename: str, media_type: str) -> OCRResult:
+        blocks = self._blocks
+        if blocks is None:
+            blocks = (
+                OCRBlock(
+                    text="TAB. METFORMIN 500MG 1-0-1 x 30 days",
+                    bbox=BoundingBox(x=0.05, y=0.26, width=0.6, height=0.02),
+                    # Deliberately the overconfidence the benchmark measured: GOT-OCR2
+                    # reported 0.87-1.00 on every fixture, including ones where it recovered
+                    # half the medications.
+                    confidence=0.98,
+                    handwritten=False,
+                ),
+            )
+        return OCRResult(backend=self.name, pages=(OCRPage(1, blocks, 1240, 1754),))
+
+
+def _route(monkeypatch: pytest.MonkeyPatch, neural: _StubNeural) -> object:
+    """A QualityRoutedOCR whose neural half is the stub above."""
+    real = backends.get_ocr_backend
+
+    def fake(name: str | None = None):  # type: ignore[no-untyped-def]
+        return neural if name == "got-ocr2" else real(name)
+
+    monkeypatch.setattr(backends, "get_ocr_backend", fake)
+    return backends.QualityRoutedOCR()
+
+
+def _needs_tesseract() -> None:
+    if not backends.TesseractOCR().available:
+        pytest.skip("tesseract is not installed in this environment")
+
+
+@pytest.mark.parametrize(
+    "name", ["prescription_scan.png", "lab_report_scan.png", "discharge_scan.png"]
+)
+def test_a_clean_scan_keeps_tesseract(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ GOT-OCR2 MUST NOT SEE A CLEAN SCAN.
+
+    Measured: it drops med recall 1.00 -> 0.75 on `prescription_scan.png`. This is the half
+    of the routing that prevents a regression, not the half that buys an improvement.
+    """
+    _needs_tesseract()
+    routed = _route(monkeypatch, _StubNeural())
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / name).read_bytes(), filename=name, media_type="image/png"
+    )
+    assert result.backend == "tesseract"
+    assert result.mean_confidence >= settings.ocr_low_confidence_threshold
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["prescription_degraded.png", "lab_report_degraded.png", "discharge_degraded.png"],
+)
+def test_a_degraded_scan_is_re_read_by_the_neural_engine(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The improvement half: med recall 0.50 -> 1.00 on `prescription_degraded.png`."""
+    _needs_tesseract()
+    if not (FIXTURES / name).exists():
+        pytest.skip(f"{name} is not in this checkout")
+    routed = _route(monkeypatch, _StubNeural())
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / name).read_bytes(), filename=name, media_type="image/png"
+    )
+    assert result.backend == "got-ocr2"
+
+
+def test_the_re_read_cannot_raise_its_own_confidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ THE SAFETY PROPERTY OF THE WHOLE FEATURE.
+
+    GOT-OCR2 reported 0.87-1.00 on every degraded fixture and sent 0% to the verification
+    lane, where Tesseract had sent 67-100%. Taking the better reading must not also take the
+    model's opinion of it: a fluent model reading a smudged line confidently is exactly the
+    case that looks like success and is not.
+    """
+    _needs_tesseract()
+    name = "prescription_degraded.png"
+    routed = _route(monkeypatch, _StubNeural())
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / name).read_bytes(), filename=name, media_type="image/png"
+    )
+
+    assert result.backend == "got-ocr2"
+    # The stub claimed 0.98. The page did not earn it.
+    for page in result.pages:
+        for block in page.blocks:
+            assert block.confidence < settings.ocr_low_confidence_threshold, (
+                "a block from a degraded-page re-read escaped the verification lane"
+            )
+
+
+def test_bounding_is_a_minimum_and_never_raises_a_score() -> None:
+    """Pure unit check of the evidence combination, no fixtures and no engines."""
+    blocks = (
+        OCRBlock("high", BoundingBox(x=0.1, y=0.1, width=0.5, height=0.02), 0.99),
+        OCRBlock("low", BoundingBox(x=0.1, y=0.2, width=0.5, height=0.02), 0.20),
+    )
+    result = OCRResult(backend="got-ocr2", pages=(OCRPage(1, blocks, 100, 100),))
+    bounded = backends._bounded_by_page_quality(result, 0.34)
+
+    assert [b.confidence for b in bounded.pages[0].blocks] == [0.34, 0.20]
+    assert [b.text for b in bounded.pages[0].blocks] == ["high", "low"]
+
+
+def test_a_failed_re_read_keeps_the_tesseract_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-read is an improvement, never a dependency."""
+    _needs_tesseract()
+
+    class _Exploding(_StubNeural):
+        def read(self, data: bytes, *, filename: str, media_type: str) -> OCRResult:
+            raise UpstreamUnavailable("the model fell over")
+
+    routed = _route(monkeypatch, _Exploding())
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / "prescription_degraded.png").read_bytes(),
+        filename="prescription_degraded.png",
+        media_type="image/png",
+    )
+    assert result.backend == "tesseract"
+    assert any(page.blocks for page in result.pages)
+
+
+def test_an_empty_re_read_keeps_the_tesseract_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model that returns nothing must not turn a readable page into a blank one."""
+    _needs_tesseract()
+    routed = _route(monkeypatch, _StubNeural(blocks=()))
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / "prescription_degraded.png").read_bytes(),
+        filename="prescription_degraded.png",
+        media_type="image/png",
+    )
+    assert result.backend == "tesseract"
+
+
+def test_an_unavailable_neural_engine_keeps_the_tesseract_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented fallback, unchanged from before quality routing existed."""
+    _needs_tesseract()
+    routed = _route(monkeypatch, _StubNeural(available=False))
+    result = routed.read(  # type: ignore[attr-defined]
+        (FIXTURES / "prescription_degraded.png").read_bytes(),
+        filename="prescription_degraded.png",
+        media_type="image/png",
+    )
+    assert result.backend == "tesseract"
+
+
+def test_images_route_through_the_quality_gate_when_both_engines_are_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _needs_tesseract()
+    monkeypatch.setattr(settings, "neural_ocr_enabled", True)
+    monkeypatch.setattr(neural, "_torch_available", lambda: True)
+    assert backend_for("image/png", "scan.png").name == "quality-routed"
+
+
+def test_the_quality_gate_is_skipped_entirely_when_neural_ocr_is_off() -> None:
+    """A default clone pays nothing: one Tesseract pass, no second engine, no decision."""
+    _needs_tesseract()
+    if settings.neural_ocr_enabled:
+        pytest.skip("neural OCR is enabled in this environment")
+    assert backend_for("image/png", "scan.png").name == "tesseract"
 
 
 # ---------------------------------------------------------------- assembly

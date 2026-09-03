@@ -1,15 +1,18 @@
 # Evaluation
 
-> **HISTORICAL RECORD — the harness this describes no longer exists.**
+> **MOSTLY HISTORICAL — one section is current, and it says so.**
 >
-> `eval/`, the 50 gold scripts, the 12 held-out scripts, the runner and the OCR benchmark were
-> removed in the UI rewrite. Every command below (`make eval`, `make eval-strict`,
-> `python -m eval.ocr_bench`) will fail. **The numbers are kept because they were really
-> measured** — on the development set *and* the held-out set, and the gap between them is the
-> honest part. Nothing here has been re-run since removal, so treat every figure as a
-> point-in-time result, not a current one.
+> `eval/`, the 50 gold scripts, the 12 held-out scripts and the runner were removed in the UI
+> rewrite. `make eval`, `make eval-strict` and `python -m eval.runner` will fail, and every
+> dialogue / red-flag / summary figure below is a point-in-time result from 2026-08-23.
+> **They are kept because they were really measured** — on the development set *and* the
+> held-out set, and the gap between them is the honest part.
 >
-> To measure again, restore the harness from the `Baseline` commit rather than writing a new
+> **`eval/ocr_bench.py` is the exception: it was restored from the `Baseline` commit on
+> 2026-09-03 and re-run.** `python -m eval.ocr_bench` works. See *OCR backend comparison*
+> below — the original table is the 2026-08-23 one, and the re-run underneath it is current.
+>
+> To measure the rest again, restore the harness from `Baseline` rather than writing a new
 > one — the held-out rule only means something if the scripts are the original ones.
 
 
@@ -308,6 +311,49 @@ Separately measured by `python -m eval.ocr_bench` against `data/fixtures/documen
 |---|---|---|---|
 | `textlayer` | med recall 1.00, conf 0.99 | *fails honestly* — no text layer | *fails honestly* |
 | `tesseract` | med recall 1.00, conf 0.86 | med recall 1.00, conf 0.88 | med recall 0.75–1.00, conf 0.61–0.83 |
+
+### Re-run 2026-09-03, with GOT-OCR2 added
+
+⚠️ **These numbers ARE current**, unlike the rest of this document. `eval/ocr_bench.py` was
+restored from the `Baseline` commit for this run, extended to take a backend list and to
+include `prescription_photo_handheld.jpg` (the only real camera capture in the fixture set),
+and re-run on 2026-09-03. Raw output: `eval/reports/ocr_bench.json`. Reproduce with
+`NEURAL_OCR_ENABLED=true python -m eval.ocr_bench textlayer,tesseract,got-ocr2`.
+
+Image variants only — the digital-PDF column is unchanged and still goes to `textlayer`.
+
+| fixture / variant | tesseract med recall | **GOT-OCR2 med recall** | tess conf | GOT conf | tess → human | **GOT → human** |
+|---|---:|---:|---:|---:|---:|---:|
+| discharge / scan | 1.00 | 1.00 | 0.91 | 1.00 | 0% | 0% |
+| lab / scan | 1.00 | 1.00 | 0.84 | 0.98 | 17% | 0% |
+| prescription / scan | **1.00** | **0.75** | 0.90 | 0.99 | 0% | 0% |
+| discharge / degraded | 0.50 | 0.50 | 0.50 | 0.87 | **67%** | **0%** |
+| lab / degraded | inv 0.57 | **inv 0.71** | 0.10 | 0.93 | **100%** | **0%** |
+| prescription / degraded | **0.50** *(dose 0.50)* | **1.00** *(dose 1.00)* | 0.34 | 0.90 | **100%** | **0%** |
+| prescription / handheld | 1.00 *(dose 0.75)* | 1.00 *(dose 1.00, dx 0.00)* | 0.90 | 0.98 | 0% | 0% |
+
+**Three things this says, and the second is the one that shaped the code.**
+
+GOT-OCR2 is better on degraded input — `prescription/degraded` goes from half the medications
+at half the doses to all of both.
+
+It is **not** better on clean scans, and on `prescription/scan` it is worse: 1.00 → 0.75 med
+recall. So it is not a replacement, and routing to it unconditionally would have been a
+regression. `QualityRoutedOCR` re-reads only pages Tesseract scored below 0.72 (ADR-0015).
+
+And it is **confidently wrong**: 0.87–1.00 reported on every fixture, 0% to the verification
+lane everywhere, including a document where it found half the medications. Its token
+probabilities measure the language model's certainty, not the paper's legibility — which is
+why a re-read is capped at the page confidence Tesseract measured rather than carrying the
+model's own.
+
+The `dx 0.00` on `prescription/handheld` is real: GOT-OCR2 emits full-width CJK punctuation
+(`，`, `（）`) that `entities.py`'s regex does not match. Known, unfixed, recorded here rather
+than quietly averaged away.
+
+n=7 image fixtures across three document families. The class separation is wide (clean
+0.84–0.91, degraded 0.10–0.50) but it is one run, and the 0.72 threshold deserves re-checking
+against more degraded captures before it is treated as settled.
 
 The number to look at is the **verification-lane rate**: the share of extracted entities
 routed to a human. It rises from 0% on a clean PDF to 60% on a degraded lab photo. That rise

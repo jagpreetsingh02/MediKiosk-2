@@ -481,6 +481,127 @@ def _normalise(raw: tuple[int, int, int, int], page_w: int, page_h: int) -> Boun
     )
 
 
+class QualityRoutedOCR:
+    """Tesseract first; GOT-OCR2 only on a page Tesseract itself judged degraded.
+
+    ⛔ THE ROUTING IS CONDITIONAL BECAUSE THE BENCHMARK SAYS IT HAS TO BE, not to save time.
+    Numbers from `python -m eval.ocr_bench`, image variants, n=7:
+
+        variant             tesseract med recall   GOT-OCR2 med recall
+        prescription/scan          1.00                   0.75   <-- GOT is WORSE
+        discharge/scan             1.00                   1.00
+        lab/scan                   1.00                   1.00
+        prescription/degraded      0.50 (dose 0.50)       1.00 (dose 1.00)
+        lab/degraded               inv 0.57               inv 0.71
+        discharge/degraded         0.50                   0.50
+
+    A blanket "images go to GOT-OCR2" would have cost a quarter of the medications on a clean
+    prescription scan. All of the win is on degraded input, so all of the routing is too.
+
+    **The signal is Tesseract's own mean page confidence**, which is already computed, costs
+    one fast pass, and separated the two classes cleanly on the fixtures — clean scans at
+    0.84 / 0.90 / 0.90 / 0.91, degraded at 0.10 / 0.34 / 0.50. A 0.34-wide gap with no
+    overlap. The cut is `ocr_low_confidence_threshold` (0.72) rather than a new constant: it
+    already means "this reading is not trustworthy on its own" everywhere else in the system,
+    and it sits inside the measured gap. Moving that setting moves this decision too, which
+    is intended — they are the same judgement about the same evidence.
+
+    ⛔ AND THE RE-READ DOES NOT INHERIT THE MODEL'S OPINION OF ITSELF. See
+    `_bounded_by_page_quality`. GOT-OCR2 reported 0.87-1.00 confidence on every fixture and
+    sent **0%** to the verification lane — including `discharge/degraded`, where it recovered
+    half the medications and Tesseract had sent 67% to a human. Its token probabilities say
+    how sure the language model is, not whether the paper was legible.
+    """
+
+    name = "quality-routed"
+
+    def __init__(self) -> None:
+        self._tesseract = TesseractOCR()
+        self.available = bool(self._tesseract.available)
+        self.unavailable_reason: str | None = (
+            None if self.available else "the tesseract binary is not installed"
+        )
+
+    def read(self, data: bytes, *, filename: str, media_type: str) -> OCRResult:
+        from app.core.config import settings  # noqa: PLC0415
+
+        first = self._tesseract.read(data, filename=filename, media_type=media_type)
+        threshold = settings.ocr_low_confidence_threshold
+        measured = first.mean_confidence
+
+        if measured >= threshold:
+            log.info(
+                "ocr.quality_routed",
+                decision="tesseract",
+                mean_confidence=round(measured, 4),
+                threshold=threshold,
+            )
+            return first
+
+        neural = get_ocr_backend("got-ocr2")
+        if not neural.available:
+            log.info(
+                "ocr.quality_routed",
+                decision="tesseract",
+                reason=getattr(neural, "unavailable_reason", None),
+                mean_confidence=round(measured, 4),
+            )
+            return first
+
+        try:
+            second = neural.read(data, filename=filename, media_type=media_type)
+        except (UpstreamUnavailable, ValidationError) as exc:
+            # The re-read is an IMPROVEMENT, never a dependency. A page Tesseract already
+            # read must not be lost because the optional engine failed on it.
+            log.warning("ocr.reread_failed", error=str(exc)[:160])
+            return first
+
+        if not any(page.blocks for page in second.pages):
+            log.warning("ocr.reread_empty", falling_back_to="tesseract")
+            return first
+
+        log.info(
+            "ocr.quality_routed",
+            decision="got-ocr2",
+            mean_confidence=round(measured, 4),
+            threshold=threshold,
+        )
+        return _bounded_by_page_quality(second, measured)
+
+
+def _bounded_by_page_quality(result: OCRResult, page_confidence: float) -> OCRResult:
+    """Cap every block's confidence at what the page itself justified.
+
+    ⛔ THIS IS EVIDENCE COMBINATION, NOT A PENALTY.
+
+    There are two independent measurements of one reading: how sure the model was of its own
+    tokens, and how legible the page was. The confidence attached to a clinical fact is a
+    claim about *the reading being right*, and it cannot exceed the weaker of the two. A
+    fluent model reading a smudged line confidently is precisely the case where the token
+    probability is high and the reading is still wrong — `neural.py`'s header calls this out
+    as the failure mode that matters most, because it looks like success.
+
+    Concretely, on `prescription/degraded` Tesseract measured 0.34 and GOT-OCR2 claimed 0.90;
+    the block goes to the record at 0.34, which is below `ocr_low_confidence_threshold`, so
+    `entities.py` routes it to a human exactly as it did before — while the *text* the human
+    reads is now the far better GOT-OCR2 reading (med recall 0.50 -> 1.00). Both halves of
+    that are the point: the better reading AND the preserved review.
+    """
+    return replace(
+        result,
+        pages=tuple(
+            replace(
+                page,
+                blocks=tuple(
+                    replace(block, confidence=min(block.confidence, page_confidence))
+                    for block in page.blocks
+                ),
+            )
+            for page in result.pages
+        ),
+    )
+
+
 def _registry() -> dict[str, type]:
     """Every engine by name, neural ones included.
 
@@ -496,6 +617,7 @@ def _registry() -> dict[str, type]:
         "tesseract": TesseractOCR,
         "got-ocr2": neural.GotOcr2OCR,
         "prescription-trocr": neural.MedicalPrescriptionOCR,
+        "quality-routed": QualityRoutedOCR,
     }
 
 
@@ -536,7 +658,7 @@ def backend_for(media_type: str, filename: str, *, requested: str | None = None)
 
 
 def _image_engine() -> OCRBackend:
-    """GOT-OCR2 when neural OCR is on and loadable, Tesseract otherwise.
+    """Quality-routed reading when the neural engine is usable, plain Tesseract otherwise.
 
     ⛔ `textlayer` IS NOT IN THIS LADDER, AND THAT IS THE POINT.
 
@@ -546,24 +668,29 @@ def _image_engine() -> OCRBackend:
     no model. An e-prescription or a lab-portal printout already contains its own perfect
     text; running a 1.1 GB vision model over it would be slower, less accurate, and would
     replace measured glyph boxes with detected line boxes. So dispatch stays on what the file
-    IS, and the neural engine takes over exactly where recognition was actually happening:
-    photographs and scans, which is where Tesseract was.
+    IS, and the conditional engine takes over exactly where recognition was actually
+    happening: photographs and scans, which is where Tesseract was.
+
+    Within images the choice is no longer static — `QualityRoutedOCR` decides per page, on a
+    measurement, because the benchmark showed GOT-OCR2 winning on degraded input and LOSING
+    on a clean prescription scan. See that class for the numbers.
 
     The fallback is deliberate and reported. If `torch` is absent or the flag is off, the
     kiosk keeps working on Tesseract rather than refusing an upload — the same shape as
     `speech/registry.py` falling back to the local backend.
     """
+    tesseract = get_ocr_backend("tesseract")
+    if not tesseract.available:
+        raise UpstreamUnavailable("This kiosk cannot read photographs at the moment.")
+
     got = get_ocr_backend("got-ocr2")
     if got.available:
-        return got
+        # Both engines are live, so the per-page quality decision is worth making.
+        return get_ocr_backend("quality-routed")
 
     reason = getattr(got, "unavailable_reason", None)
     if reason:
         log.info("ocr.neural_unavailable", falling_back_to="tesseract", why=reason)
-
-    tesseract = get_ocr_backend("tesseract")
-    if not tesseract.available:
-        raise UpstreamUnavailable("This kiosk cannot read photographs at the moment.")
     return tesseract
 
 
