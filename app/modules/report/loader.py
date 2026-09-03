@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.durable import (
+    REVIEWABLE_REVIEW_STATUSES,
     ClinicalFactRecord,
     ContradictionRecord,
     DocumentRecord,
@@ -75,7 +76,19 @@ async def _facts_for(db: AsyncSession, encounter_id: int) -> list[ClinicalFactRe
         (
             await db.execute(
                 select(ClinicalFactRecord)
-                .where(ClinicalFactRecord.encounter_id == encounter_id)
+                .where(
+                    ClinicalFactRecord.encounter_id == encounter_id,
+                    # ⛔ REJECTED FACTS DO NOT APPEAR IN THE BRIEF AT ALL.
+                    #
+                    # The brief is the clinical view — it is the document a physician reads
+                    # before the consultation and the one that gets exported. A fact a
+                    # clinician explicitly threw out has no business in it at any density,
+                    # under any heading, marked or otherwise. `pending` and `edited` DO stay,
+                    # because "unconfirmed, and visibly so" is exactly what the reviewer
+                    # needs to see; `brief.py` carries `reviewStatus` onto every line so the
+                    # renderer can mark them rather than pass them off as signed-off.
+                    ClinicalFactRecord.review_status.in_(REVIEWABLE_REVIEW_STATUSES),
+                )
                 # Ordered by primary key so two loads return the same sequence. Without an
                 # explicit ORDER BY, Postgres may return rows in any order it likes, and the
                 # payload would differ between runs for reasons that have nothing to do with

@@ -96,6 +96,12 @@ def _line(fact: ClinicalFactRecord, evidence: list[SourceEvidence], label: str) 
         "confidence": fact.confidence,
         "confidenceStatus": fact.confidence_status,
         "confirmedByPhysician": fact.confirmed_by_physician,
+        #: The review axis itself. `confirmedByPhysician` above cannot distinguish "nobody
+        #: has looked at this yet" from "a physician changed it and has not signed it off",
+        #: and a brief that renders those identically is telling the reader something untrue.
+        #: Rejected facts never reach here — `loader._facts_for` drops them.
+        "reviewStatus": fact.review_status,
+        "origin": fact.origin,
         # ── 3C: the provenance handle on every line ────────────────────────────
         "factRef": fact.fact_ref,
         "evidenceIds": [e.id for e in evidence],

@@ -66,3 +66,22 @@ cross_tier_paths:
   - hpi.severity
   - personal_history.tobacco
   - personal_history.alcohol
+
+# Two sources that both state a dose for the SAME medicine, and disagree.
+#
+# Neither wins, and the reason here is clinical rather than technical: a prescription from
+# March and one from July may BOTH be correct, because the dose was changed. A titration and
+# a transcription error look identical to this system, and only the physician can tell them
+# apart — so it reports both, naming the document and page each came from.
+#
+# Same-document disagreement is deliberately NOT raised. A single prescription listing one
+# drug twice at two doses is an OCR fault, not a clinical conflict, and it belongs in the
+# verification lane where a human is already being asked to read that page.
+dosage_conflicts:
+  - id: CX-DOSE-01
+    label: "Two documents give different doses for the same medicine"
+    group: medications
+    match_field: name          # same drug, matched on the normalised name
+    compare_field: dose        # a different value here is the conflict
+    require_different_sources: true
+    question: "Which dose are you taking now?"

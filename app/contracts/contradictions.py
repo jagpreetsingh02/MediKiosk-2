@@ -50,6 +50,14 @@ class Contradiction(BaseModel):
     contradiction_id: str
     rule_id: str
     label: str
+    #: Which detector produced this. Added because `patient_side`/`document_side` stopped
+    #: being accurate the moment document-vs-document conflicts existed: for a
+    #: `dosage_conflict` BOTH sides are documents, and the field names are a leftover from
+    #: when only the patient-denies-a-document case existed. The names are kept for now
+    #: because `frontend/src/lib/api.ts` types against them; each side's `origin` carries the
+    #: true source label, and the rename to side_a/side_b happens when that client is
+    #: rewritten. Read `kind` rather than inferring the shape from the field names.
+    kind: Literal["denial", "cross_tier", "dosage_conflict"] = "denial"
     patient_side: ContradictionSide
     document_side: ContradictionSide
     #: A question the kiosk (or the physician) can put to the patient to settle it.
@@ -79,12 +87,31 @@ class DenialRule(BaseModel):
         return False
 
 
+class DosageConflictRule(BaseModel):
+    """Two sources stating a different dose for the same drug. Neither is preferred."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    label: str
+    group: str
+    match_field: str
+    compare_field: str
+    #: When true, two readings of the SAME document are not a conflict. A prescription that
+    #: appears to list one drug at two doses is an OCR fault; the verification lane already
+    #: has a human reading that page, and raising it here would put an unanswerable clinical
+    #: question in front of the physician instead.
+    require_different_sources: bool = True
+    question: str | None = None
+
+
 class ContradictionRules(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: str
     denials: list[DenialRule]
     cross_tier_paths: list[str] = Field(default_factory=list)
+    dosage_conflicts: list[DosageConflictRule] = Field(default_factory=list)
 
 
 @functools.lru_cache(maxsize=1)
@@ -152,6 +179,7 @@ def detect(ledger: FactLedger) -> list[Contradiction]:
                     contradiction_id=_identity(rule.id, denial, other),
                     rule_id=rule.id,
                     label=rule.label,
+                    kind="denial",
                     patient_side=_side(denial),
                     document_side=_side(other),
                     clarifying_question=rule.question,
@@ -177,10 +205,81 @@ def detect(ledger: FactLedger) -> list[Contradiction]:
                 contradiction_id=_identity("CX-VALUE", first, second),
                 rule_id="CX-VALUE",
                 label=f"Two sources give a different answer for {path}",
+                kind="cross_tier",
                 patient_side=_side(first),
                 document_side=_side(second),
                 clarifying_question=None,
             )
         )
 
+    # ---- two documents disagreeing about a dose ---------------------------
+    found.extend(_dosage_conflicts(rules, active))
+
     return found
+
+
+def _entry_index(path: str, group: str) -> str | None:
+    """`medications[2].dose` -> `2`, for the group asked about. None if it is not one."""
+    if not path.startswith(f"{group}["):
+        return None
+    closing = path.find("]")
+    return path[len(group) + 1 : closing] if closing > 0 else None
+
+
+def _dosage_conflicts(rules: ContradictionRules, active: list[Fact]) -> list[Contradiction]:
+    """Same drug, two sources, different dose. Reports both and prefers neither.
+
+    Matching is on the NORMALISED name, so `TAB. METFORMIN` and `Metformin` are one drug and
+    a physician is not asked to reconcile a capitalisation. The comparison is over recorded
+    values only — a missing dose on one side is not a disagreement, it is a gap, and treating
+    an absence as a conflicting value is how a clarifying question gets asked about something
+    nobody ever claimed.
+    """
+    from app.modules.encounter.promote import normalize_medicine
+
+    out: list[Contradiction] = []
+    for rule in rules.dosage_conflicts:
+        names: dict[str, Fact] = {}
+        values: dict[str, Fact] = {}
+        for fact in active:
+            index = _entry_index(fact.path, rule.group)
+            if index is None:
+                continue
+            if fact.path.endswith(f".{rule.match_field}"):
+                names[index] = fact
+            elif fact.path.endswith(f".{rule.compare_field}"):
+                values[index] = fact
+
+        # drug -> the entries that named it, in ledger order
+        by_drug: dict[str, list[str]] = {}
+        for index, name_fact in names.items():
+            if index in values:
+                by_drug.setdefault(normalize_medicine(str(name_fact.value)), []).append(index)
+
+        for indices in by_drug.values():
+            for position, first_index in enumerate(indices):
+                for second_index in indices[position + 1 :]:
+                    first, second = values[first_index], values[second_index]
+                    if str(first.value).strip().casefold() == str(second.value).strip().casefold():
+                        continue
+                    if rule.require_different_sources and _same_source(first, second):
+                        continue
+                    out.append(
+                        Contradiction(
+                            contradiction_id=_identity(rule.id, first, second),
+                            rule_id=rule.id,
+                            label=f"{rule.label}: {names[first_index].value}",
+                            kind="dosage_conflict",
+                            patient_side=_side(first),
+                            document_side=_side(second),
+                            clarifying_question=rule.question,
+                        )
+                    )
+    return out
+
+
+def _same_source(a: Fact, b: Fact) -> bool:
+    """Two facts read off the same document. See `require_different_sources`."""
+    first = getattr(a.source, "document_id", None)
+    second = getattr(b.source, "document_id", None)
+    return first is not None and first == second

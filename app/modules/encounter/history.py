@@ -23,10 +23,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.durable import (
+    ACTIVE_REVIEW_STATUSES,
+    REVIEW_STATUSES,
+    REVIEWABLE_REVIEW_STATUSES,
     ClinicalFactRecord,
     ContradictionRecord,
     DocumentRecord,
@@ -63,6 +66,48 @@ FEATURE_LABELS: dict[str, str] = {
     "hpi.exacerbating": "aggravating factor",
     "past_medical.conditions": "known condition",
 }
+
+
+# ---------------------------------------------------------------- review gating
+
+
+def _backed_by(column, statuses: frozenset[str]):  # type: ignore[no-untyped-def]
+    """Rows whose backing `clinical_fact` is in one of `statuses`.
+
+    `MedicationEvent` and `TimelineEventRecord` both carry `source_fact_ref`, and promotion
+    sets it for BOTH patient-reported and document-extracted rows — a medicine read off a
+    prescription becomes a document-tier fact first. So one gate over `review_status` is
+    precise for them; there is no second, looser path to paper over.
+
+    ⚠️ `ObservationEvent` IS THE EXCEPTION, AND IT IS NOT GATED. It has no `source_fact_ref`
+    column at all (see `app/db/durable.py`), so there is nothing to join on. Its review
+    already happens earlier and elsewhere: `promote()` refuses to promote a low-confidence
+    document entity that no human accepted, so every observation in the durable record came
+    from an entity a person had already verified. What is genuinely missing is the ability to
+    reject a lab value AFTER promotion — closing that needs an `ObservationEvent.source_fact_ref`
+    and a migration, which is out of this session's scope. It is left unfiltered and said out
+    loud here rather than given a filter that looks uniform and quietly does nothing.
+
+    ⛔ A NULL `source_fact_ref` IS ADMITTED, AND THAT IS NOT A LOOPHOLE — but it would be one
+    if it went unguarded. `NULL IN (...)` is never true in SQL, so a strict gate silently
+    drops every row that has no backing fact, and some genuinely have none: the seeded demo
+    medications are standalone rows derived from no `ClinicalFactRecord` at all, and fact
+    review cannot apply to a fact that does not exist.
+
+    What makes that safe for REAL data is that `promote()` always sets `source_fact_ref`, from
+    `medication.name.fact_ids[0]`, and a slot cannot be `recorded` without fact ids. That is
+    an assumption, so it is tested rather than trusted:
+    `test_promoted_medications_always_carry_a_fact_ref` fails the build if promotion ever
+    produces a medication that would take this branch.
+    """
+    return or_(
+        column.is_(None),
+        column.in_(
+            select(ClinicalFactRecord.fact_ref).where(
+                ClinicalFactRecord.review_status.in_(statuses)
+            )
+        ),
+    )
 
 
 async def get_patient(db: AsyncSession, *, patient_ref: str) -> Patient | None:
@@ -164,7 +209,12 @@ async def overview(db: AsyncSession, patient: Patient) -> dict[str, Any]:
             return list(
                 (
                     await session.execute(
-                        select(MedicationEvent).where(MedicationEvent.patient_id == patient.id)
+                        select(MedicationEvent).where(
+                            MedicationEvent.patient_id == patient.id,
+                            # A patient overview is an ACTIVE clinical view. Only facts a
+                            # physician signed off appear in it.
+                            _backed_by(MedicationEvent.source_fact_ref, ACTIVE_REVIEW_STATUSES),
+                        )
                     )
                 ).scalars().all()
             )
@@ -226,7 +276,15 @@ async def timeline(
     db: AsyncSession, patient_id: int, *, kinds: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """Every event across every confirmed encounter, newest first, undated last."""
-    statement = select(TimelineEventRecord).where(TimelineEventRecord.patient_id == patient_id)
+    statement = select(TimelineEventRecord).where(
+        TimelineEventRecord.patient_id == patient_id,
+        # The timeline is a REVIEW surface as much as a clinical one — a physician scanning a
+        # patient's history needs to see what is still awaiting their attention, marked as
+        # such. So `pending` and `edited` stay and are flagged `provisional` below. Rejected
+        # events are gone entirely, at every level. Rows with no backing fact (an encounter
+        # marker, say) are not fact-derived and are never filtered.
+        _backed_by(TimelineEventRecord.source_fact_ref, REVIEWABLE_REVIEW_STATUSES),
+    )
     if kinds:
         statement = statement.where(TimelineEventRecord.kind.in_(kinds))
     rows = list((await db.execute(statement)).scalars().all())
@@ -296,7 +354,13 @@ async def medication_history(
         (
             await db.execute(
                 select(MedicationEvent)
-                .where(MedicationEvent.patient_id == patient_id)
+                .where(
+                    MedicationEvent.patient_id == patient_id,
+                    # Reconciliation decides what a patient is taking. That is the most
+                    # active clinical use in this module, so it sees confirmed facts only —
+                    # an unreviewed dose must never reach a "current medicines" list.
+                    _backed_by(MedicationEvent.source_fact_ref, ACTIVE_REVIEW_STATUSES),
+                )
                 .order_by(MedicationEvent.observed_on, MedicationEvent.recorded_at)
             )
         ).scalars().all()
@@ -445,6 +509,12 @@ async def _denies_medication(db: AsyncSession, encounter: Encounter | None) -> b
             select(ClinicalFactRecord).where(
                 ClinicalFactRecord.encounter_id == encounter.id,
                 ClinicalFactRecord.path == "drug_allergy.taking_medicines",
+                # REVIEWABLE, not ACTIVE. Contradiction detection has to run on facts nobody
+                # has reviewed yet — catching the conflict is what PRODUCES the review — so
+                # `pending` and `edited` belong here. `rejected` does not: a denial the
+                # physician already threw out must not go on generating questions about
+                # itself.
+                ClinicalFactRecord.review_status.in_(REVIEWABLE_REVIEW_STATUSES),
             )
         )
     ).scalars().first()
@@ -476,13 +546,25 @@ class SimilarEncounter:
         }
 
 
-async def _feature_set(db: AsyncSession, encounter_id: int) -> dict[str, set[str]]:
+async def _feature_set(
+    db: AsyncSession, encounter_id: int, *, statuses: frozenset[str]
+) -> dict[str, set[str]]:
+    """Comparable features for one encounter, restricted to the review statuses named.
+
+    ⛔ `statuses` IS REQUIRED, AND ASYMMETRIC BY DESIGN. See `similar_encounters`.
+
+    A parameter rather than a constant because the two callers genuinely want different
+    answers, and a single filter would break one of them: confirmed-only makes retrieval
+    return nothing during review (today's facts are all `pending`), while
+    reviewable-everywhere would retrieve against unreviewed history.
+    """
     rows = list(
         (
             await db.execute(
                 select(ClinicalFactRecord).where(
                     ClinicalFactRecord.encounter_id == encounter_id,
                     ClinicalFactRecord.path.in_(SIMILARITY_PATHS),
+                    ClinicalFactRecord.review_status.in_(statuses),
                 )
             )
         ).scalars().all()
@@ -514,7 +596,18 @@ async def similar_encounters(
     exclude_encounter_id: int | None = None,
     limit: int = 3,
 ) -> list[dict[str, Any]]:
-    """Prior visits of THE SAME PATIENT that share recorded features with this one."""
+    """Prior visits of THE SAME PATIENT that share recorded features with this one.
+
+    ⛔ PRIOR ENCOUNTERS ARE MATCHED ON CONFIRMED FACTS ONLY, and the asymmetry with
+    `current_features` is the whole point.
+
+    Retrieval is a clinical claim — "this patient has been here before with this" — and it
+    has to rest on facts a physician signed off. Matching against `pending` history would let
+    an unreviewed answer from a previous visit pull up a recurrence that no clinician ever
+    accepted; matching against `rejected` history would resurface something one explicitly
+    threw out. Today's encounter is the exception, because it IS the thing being reviewed —
+    see `current_features`.
+    """
     candidates = [
         e
         for e in await encounters_for(db, patient_id)
@@ -523,7 +616,7 @@ async def similar_encounters(
 
     scored: list[SimilarEncounter] = []
     for candidate in candidates:
-        past = await _feature_set(db, candidate.id)
+        past = await _feature_set(db, candidate.id, statuses=ACTIVE_REVIEW_STATUSES)
         shared: list[dict[str, str]] = []
         for path, values in current_features.items():
             overlap = values & past.get(path, set())
@@ -549,7 +642,14 @@ async def similar_encounters(
 
 
 async def current_features(db: AsyncSession, encounter_id: int) -> dict[str, set[str]]:
-    return await _feature_set(db, encounter_id)
+    """Features of the encounter being reviewed RIGHT NOW — the working set.
+
+    Reviewable rather than active: this is the visit on the physician's screen, and its facts
+    are `pending` until they work through them. Filtering to `confirmed` here would mean
+    "similar previous visits" showed nothing until the review was already finished, which is
+    the one moment it is no longer useful.
+    """
+    return await _feature_set(db, encounter_id, statuses=REVIEWABLE_REVIEW_STATUSES)
 
 
 async def features_from_ledger(paths_and_values: dict[str, Any]) -> dict[str, set[str]]:
@@ -566,14 +666,28 @@ async def features_from_ledger(paths_and_values: dict[str, Any]) -> dict[str, se
 
 
 async def evidence_for_fact(
-    db: AsyncSession, *, encounter_id: int, fact_ref: str
+    db: AsyncSession, *, encounter_id: int, fact_ref: str, include_rejected: bool = False
 ) -> dict[str, Any] | None:
-    """Click-to-source for a durable fact, including a link to the document page."""
+    """Click-to-source for a durable fact, including a link to the document page.
+
+    ⛔ A REJECTED FACT IS NOT REACHABLE HERE BY DEFAULT.
+
+    This is a clinical view — it is what opens when a physician clicks a line in the brief —
+    and a fact one of them threw out must not be openable from a clinical surface, even by
+    someone who kept the reference. `include_rejected=True` exists for the AUDITOR route,
+    whose entire job is seeing what was removed and why; it is a different reader with a
+    different purpose-of-use, and it asks explicitly.
+
+    A boolean parameter, not a status set, because there are exactly two readers and the
+    difference between them is precisely this one question.
+    """
+    statuses = set(REVIEW_STATUSES) if include_rejected else set(REVIEWABLE_REVIEW_STATUSES)
     fact = (
         await db.execute(
             select(ClinicalFactRecord).where(
                 ClinicalFactRecord.encounter_id == encounter_id,
                 ClinicalFactRecord.fact_ref == fact_ref,
+                ClinicalFactRecord.review_status.in_(statuses),
             )
         )
     ).scalars().first()
@@ -593,6 +707,12 @@ async def evidence_for_fact(
         "confidence": fact.confidence,
         "confidenceStatus": fact.confidence_status,
         "confirmedByPhysician": fact.confirmed_by_physician,
+        # The axis itself, not just the legacy boolean it shadows. A caller has to be able to
+        # tell "nobody has looked at this" from "a physician signed it off".
+        "reviewStatus": fact.review_status,
+        "reviewedBy": fact.reviewed_by,
+        "reviewedAt": fact.reviewed_at.isoformat() if fact.reviewed_at else None,
+        "origin": fact.origin,
         "evidence": [
             {
                 "sourceType": e.source_type,
@@ -653,3 +773,74 @@ def latest_observation_by_analyte(rows: list[ObservationEvent]) -> dict[str, Obs
 
 def _observed(row: ObservationEvent) -> date:
     return row.observed_on or date.min
+
+
+async def persist_cross_encounter(
+    db: AsyncSession,
+    *,
+    patient_id: int,
+    encounter_id: int,
+    findings: list[dict[str, Any]],
+) -> list[ContradictionRecord]:
+    """Write cross-visit disagreements into the durable record. Idempotent.
+
+    ⛔ THESE WERE BEING COMPUTED AND THROWN AWAY.
+
+    `reconcile_live_session` has always found the clinically interesting conflict — "you told
+    me no medicines and your own file says metformin" — and its findings reached exactly one
+    read endpoint and then evaporated. `ContradictionRecord` was written only from
+    `contracts.contradictions.detect`, which sees a single capture ledger and by construction
+    cannot look at a previous visit. So the disagreement a physician most needs a record of
+    was the one kind that never reached the record, the audit trail, or the brief.
+
+    `scope="cross_encounter"` is what tells the two apart afterwards. Both are open, both are
+    resolved by a human, and NEITHER SIDE IS PREFERRED here any more than in `detect()`.
+
+    Idempotent by `contradiction_ref`, which is derived from the finding's own content: this
+    runs at promotion, and a retried promotion must not double every conflict.
+    """
+    import hashlib
+
+    written: list[ContradictionRecord] = []
+    for finding in findings:
+        names = ",".join(
+            str(item.get("name", "")) for item in finding.get("historicalEvidence", [])
+        )
+        digest = hashlib.sha256(
+            f"{encounter_id}|{finding.get('kind')}|{names}".encode()
+        ).hexdigest()[:10]
+        ref = f"cx_{digest}"
+
+        existing = (
+            await db.execute(
+                select(ContradictionRecord).where(
+                    ContradictionRecord.contradiction_ref == ref,
+                    ContradictionRecord.encounter_id == encounter_id,
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            continue
+
+        row = ContradictionRecord(
+            patient_id=patient_id,
+            encounter_id=encounter_id,
+            contradiction_ref=ref,
+            rule_id=str(finding.get("kind", "cross_encounter"))[:32],
+            label=str(finding.get("currentStatement", "")),
+            # The neutral halves the durable table already had. `side_a` is what the patient
+            # said today; `side_b` is what their own record holds. The in-memory
+            # `Contradiction` model still calls these patient_side/document_side — see the
+            # `kind` field there for why that naming is on borrowed time.
+            side_a_json={"statement": finding.get("currentStatement"), "source": "this visit"},
+            side_b_json={
+                "evidence": finding.get("historicalEvidence"),
+                "source": "the patient's own record",
+            },
+            clarifying_question=finding.get("status"),
+            status="open",
+            scope="cross_encounter",
+        )
+        db.add(row)
+        written.append(row)
+    return written

@@ -7,9 +7,9 @@ a patient reference in a URL would be enough to read somebody else's history.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Body, Depends, Response
 from sqlalchemy import select
 
 from app.api.deps import CurrentIdentity, DbSession, require_action, require_any_action
@@ -246,8 +246,67 @@ async def durable_fact_evidence(
         raise ValidationError(f"No encounter {encounter_ref!r} for this patient.")
     found = await H.evidence_for_fact(db, encounter_id=encounter.id, fact_ref=fact_ref)
     if found is None:
+        # Also the answer for a REJECTED fact, deliberately. `evidence_for_fact` excludes
+        # them unless a caller asks explicitly, and this clinical route never does — a fact a
+        # physician threw out is not openable from a clinical surface by anyone still holding
+        # its reference. The auditor route is the reader that passes include_rejected.
         raise ValidationError(f"No fact {fact_ref!r} in that encounter.")
     return found
+
+
+@router.post(
+    "/{patient_ref}/encounters/{encounter_ref}/facts/{fact_ref}/review",
+    dependencies=[Depends(require_action("summary.edit"))],
+)
+async def review_fact(
+    db: DbSession,
+    patient_ref: str,
+    encounter_ref: str,
+    fact_ref: str,
+    identity: CurrentIdentity,
+    payload: Annotated[dict, Body()],
+) -> dict[str, Any]:
+    """Confirm, reject or edit one durable fact. The only way `review_status` moves.
+
+    Restricted to `summary.edit`, which `config/policy.yaml` already grants to `clinician`
+    alone — the same role gate Invariant 4 puts on committing. Reusing the existing action
+    rather than minting one keeps the policy file the single description of who may do what.
+
+    `rejected` is terminal; `edited` requires a `value` and does NOT imply confirmation. See
+    `app/modules/encounter/review.py` for the state machine and why.
+    """
+    from app.modules.encounter.review import set_review_status
+
+    patient = await _resolve(db, identity, patient_ref)
+    encounter = (
+        await db.execute(
+            select(Encounter).where(
+                Encounter.encounter_ref == encounter_ref,
+                Encounter.patient_id == patient.id,
+            )
+        )
+    ).scalars().first()
+    if encounter is None:
+        raise ValidationError(f"No encounter {encounter_ref!r} for this patient.")
+
+    fact = await set_review_status(
+        db,
+        encounter=encounter,
+        fact_ref=fact_ref,
+        status=str(payload.get("status", "")),
+        actor=identity.actor,
+        actor_role=identity.role,
+        new_value=payload.get("value"),
+        reason=payload.get("reason"),
+    )
+    return {
+        "factRef": fact.fact_ref,
+        "reviewStatus": fact.review_status,
+        "reviewedBy": fact.reviewed_by,
+        "reviewedAt": fact.reviewed_at.isoformat() if fact.reviewed_at else None,
+        "origin": fact.origin,
+        "displayValue": fact.display_value,
+    }
 
 
 @router.get(

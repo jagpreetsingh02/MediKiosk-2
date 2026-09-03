@@ -78,6 +78,21 @@ def normalize_medicine(name: str) -> str:
     return _NON_WORD.sub(" ", name.casefold()).strip()
 
 
+def _origin_for(fact: Any) -> str:
+    """Durable origin from a capture-side fact. One of `FACT_ORIGINS`.
+
+    Only two of the four are reachable from a capture session, and deliberately so: a
+    promotion reads a `FactLedger`, and everything in one was either said by the patient or
+    read off a document they handed over. `prior_encounter` is written by carry-forward and
+    `physician_entered` by the review path — neither of which is promotion's business.
+
+    Mapping from `tier` rather than inventing a parallel classification keeps this honest:
+    the durable origin of a document-tier fact is the document, and there is no third answer
+    a capture session could give.
+    """
+    return "document" if fact.tier.value == "document" else "patient_stated"
+
+
 @dataclass(slots=True)
 class PromotionResult:
     patient_ref: str
@@ -261,6 +276,19 @@ async def promote(
             # it" — usually close, briefly, but not what the column means whenever promotion
             # is not instantaneous with capture.
             valid_from=fact.recorded_at,
+            # ⛔ PROMOTION CLAIMS NOTHING ABOUT REVIEW, AND THAT IS THE POINT OF THIS SESSION.
+            #
+            # Committing the summary is the physician accepting the ENCOUNTER; it is not
+            # them having read each of forty facts. Those are different acts and the record
+            # now says which one happened. Every promoted fact starts `pending` and becomes
+            # `confirmed` only through `review.set_review_status()`, one fact at a time, by
+            # a named clinician.
+            #
+            # This is why the migration backfills EXISTING rows to `confirmed` and new ones
+            # land `pending`: before this line there was no per-fact review to record, so
+            # the encounter-level commit was the only signal there was.
+            review_status="pending",
+            origin=_origin_for(fact),
         )
         db.add(row)
         await db.flush()
@@ -515,9 +543,30 @@ async def promote(
                 side_b_json=conflict.document_side.model_dump(mode="json", by_alias=True),
                 clarifying_question=conflict.clarifying_question,
                 status=conflict.status,
+                # In-ledger by construction: `detect()` only ever sees one capture session.
+                scope="in_encounter",
             )
         )
         result.contradictions += 1
+
+    # ---- the cross-VISIT half, which was previously computed and discarded ----
+    #
+    # `reconcile_live_session` compares what the patient said today against their own durable
+    # record. It has always found the clinically interesting case — a denial contradicted by
+    # the patient's own prior prescription — and its findings reached one read endpoint and
+    # then evaporated, because the only writer of ContradictionRecord was the loop above.
+    #
+    # Imported here rather than at module scope: `history` imports `normalize_medicine` from
+    # this module, so a top-level import would close the cycle.
+    from app.modules.encounter.history import persist_cross_encounter, reconcile_live_session
+
+    cross = await reconcile_live_session(
+        db, patient_id=patient.id, values={f.path: f.value for f in ledger.active_facts()}
+    )
+    written = await persist_cross_encounter(
+        db, patient_id=patient.id, encounter_id=encounter.id, findings=cross
+    )
+    result.contradictions += len(written)
 
     db.add(
         PhysicianDecision(

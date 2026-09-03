@@ -22,6 +22,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     Boolean,
     Date,
+    DateTime,
     Float,
     ForeignKey,
     Index,
@@ -185,6 +186,57 @@ class Encounter(Base):
 #: nothing happened to have a span of.
 FACT_STATES = ("stated", "confirmed", "document", "unknown", "not_asked", "declined")
 
+#: ⛔ THE PHYSICIAN-REVIEW AXIS. A THIRD AXIS, AND IT IS NOT A BOOLEAN.
+#:
+#: Three orthogonal things get asked about one fact, and collapsing any two of them loses a
+#: distinction a clinician needs:
+#:
+#:     tier           how good is the evidence      stated | confirmed | document
+#:     state          is there a value at all       + unknown | not_asked | declined
+#:     review_status  what did the physician do     pending | confirmed | rejected | edited
+#:
+#: `tier="confirmed"` means THE PATIENT AFFIRMED A CLOSED QUESTION. `review_status="confirmed"`
+#: means A PHYSICIAN SIGNED IT OFF. They are unrelated, they are both called "confirmed" in
+#: clinical English, and conflating them would let a patient's yes-answer masquerade as a
+#: doctor's approval. Never branch on the word alone; always name the axis.
+#:
+#: `rejected` IS NOT "pending, but more so". A physician who throws a fact out has made a
+#: positive clinical statement about it, and that is different in kind from one nobody has
+#: looked at yet. `pending` and `edited` are withheld from ACTIVE clinical use but still
+#: appear, marked, in review surfaces. `rejected` appears in NO clinical view at any time —
+#: it survives only for the audit trail. Every read filter branches on all three cases; a
+#: `confirmed == True` boolean cannot express the difference and is what this replaces.
+REVIEW_STATUSES = ("pending", "confirmed", "rejected", "edited")
+
+#: Statuses admitted to ACTIVE clinical use — retrieval, medication reconciliation, the
+#: brief's active lists. Deliberately a frozenset rather than a comparison, so a call site
+#: reads as "which statuses does this surface admit" instead of "is it confirmed".
+ACTIVE_REVIEW_STATUSES = frozenset({"confirmed"})
+
+#: Statuses a REVIEW surface may show. Contradiction detection, the red-flag inputs and the
+#: physician's own review list must see unreviewed work — that is the entire point of them —
+#: but never something already thrown out.
+REVIEWABLE_REVIEW_STATUSES = frozenset({"confirmed", "pending", "edited"})
+
+#: Terminal. There is no transition out of `rejected`; see `app/modules/encounter/review.py`.
+TERMINAL_REVIEW_STATUSES = frozenset({"rejected"})
+
+#: Where a durable fact came from. Wider than `SourceTier`, and deliberately so.
+#:
+#: Invariant 2 fixes the CAPTURE-side tiers at exactly three and a test asserts it: a fourth
+#: tier would be a place to hide an inference while a patient is being interviewed. The
+#: durable side has different questions to answer — it has to say that a fact was carried
+#: forward from an earlier visit, or typed by a physician — and it already diverges from
+#: `SourceTier` for exactly this reason (`FACT_STATES` has six values against three tiers).
+#: So origin lives here, on the promoted row, and `SourceTier` is untouched.
+FACT_ORIGINS = ("patient_stated", "document", "prior_encounter", "physician_entered")
+
+#: What a `SourceEvidence` row can be evidence OF. The same widening as `FACT_ORIGINS`, on
+#: the evidence rather than the fact: `utterance` and `document` carry a span, while
+#: `prior_encounter` names the visit a fact was carried forward from and `physician` names
+#: the clinician who typed it. Capture-side `SourceTier` remains three values (Invariant 2).
+EVIDENCE_SOURCE_TYPES = ("utterance", "document", "prior_encounter", "physician")
+
 
 class ClinicalFactRecord(Base):
     """A promoted fact. Same shape as `SessionFact`, but it outlives the session.
@@ -240,7 +292,32 @@ class ClinicalFactRecord(Base):
     #: not have been on the path. Null for live facts and for superseded ones alike.
     invalidated_reason: Mapped[str | None] = mapped_column(Text)
 
-    #: True once a physician explicitly confirmed this individual fact.
+    #: One of `REVIEW_STATUSES`. THE authority on what the physician did with this fact.
+    #:
+    #: New rows are `pending`: promotion writes the fact but claims nothing about review.
+    #: Existing rows were backfilled to `confirmed` — see the migration for why that, and not
+    #: `pending`, is the truthful answer for them.
+    review_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: One of `FACT_ORIGINS`. Where the fact came from, on the durable side — including the
+    #: two things `SourceTier` structurally cannot say: carried forward from a prior
+    #: encounter, and entered by a physician.
+    origin: Mapped[str] = mapped_column(String(32), default="patient_stated")
+
+    #: ⚠️ DERIVED FROM `review_status`, AND KEPT ONLY BECAUSE IT IS ON THE WIRE.
+    #:
+    #: `report/brief.py` and `history.evidence_for_fact` both serialise it as
+    #: `confirmedByPhysician`, so removing it would break a payload the frontend is about to
+    #: be written against. It is maintained as `review_status == "confirmed"` and nothing
+    #: reads it to make a decision.
+    #:
+    #: Do NOT branch on it. It cannot tell `pending` from `rejected`, which is precisely the
+    #: distinction every read filter in `history.py` now has to make. It was also never
+    #: written by `promote()` at all — only by `seed.py` — so every one of the 805 real facts
+    #: carried `False` while being fully committed, which is how a half-wired boolean looks
+    #: right up until someone trusts it.
     confirmed_by_physician: Mapped[bool] = mapped_column(Boolean, default=False)
 
     encounter: Mapped[Encounter] = relationship(back_populates="facts")
@@ -261,7 +338,15 @@ class SourceEvidence(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     fact_id: Mapped[int] = mapped_column(ForeignKey("clinical_fact.id", ondelete="CASCADE"))
-    source_type: Mapped[str] = mapped_column(String(16))  # utterance | document
+    #: One of `EVIDENCE_SOURCE_TYPES` — see `FACT_ORIGINS` for why the durable side carries
+    #: origins the capture-side tiers cannot.
+    #:
+    #: Still `String(16)`: the longest member is `prior_encounter` at 15 characters, so the
+    #: two new values fit the existing column and the migration needs no ALTER TYPE. That is
+    #: not pedantry — an ALTER of a column type is the one shape in this migration that would
+    #: have needed SQLite batch mode, and the migration suite runs on SQLite. A fifth value
+    #: longer than 16 characters would need a widening; add it deliberately, not by accident.
+    source_type: Mapped[str] = mapped_column(String(16))
     verbatim: Mapped[str] = mapped_column(Text)
     language: Mapped[str] = mapped_column(String(8), default="en")
     modality: Mapped[str | None] = mapped_column(String(16))
@@ -280,6 +365,14 @@ class SourceEvidence(Base):
     #: record holding a value whose only evidence is an OCR line that disagrees with it.
     human_reading: Mapped[str | None] = mapped_column(Text)
     read_by: Mapped[str | None] = mapped_column(String(255))
+
+    #: Set when `source_type == "prior_encounter"`: WHICH earlier visit this was carried
+    #: forward from. Without it "recorded in a previous encounter" is an assertion the
+    #: physician cannot follow, which is the same as having no provenance at all.
+    #:
+    #: Not a foreign key, matching `Encounter.consent_ref`: it holds an `encounter_ref`
+    #: string, and a fact must not become undeletable because something points at its origin.
+    prior_encounter_ref: Mapped[str | None] = mapped_column(String(64), index=True)
 
     fact: Mapped[ClinicalFactRecord] = relationship(back_populates="evidence")
 
@@ -438,6 +531,16 @@ class ContradictionRecord(Base):
     )
     contradiction_ref: Mapped[str] = mapped_column(String(32), index=True)
     rule_id: Mapped[str] = mapped_column(String(32))
+    #: `in_encounter` | `cross_encounter`. Which of the two detectors found this.
+    #:
+    #: Both were already computed and only one was ever stored: `detect()` runs over the
+    #: capture ledger and its findings are persisted at promotion, while
+    #: `history.reconcile_live_session` compares today's answers against the patient's own
+    #: record and its findings reached exactly one read endpoint and then evaporated. A
+    #: cross-visit disagreement is the more clinically interesting of the two — it is the
+    #: "you told me no medicines but your own file says metformin" case — and it was the one
+    #: that never made it into the durable record or the audit trail.
+    scope: Mapped[str] = mapped_column(String(16), default="in_encounter", index=True)
     label: Mapped[str] = mapped_column(Text)
     side_a_json: Mapped[dict | None] = mapped_column(JSON)
     side_b_json: Mapped[dict | None] = mapped_column(JSON)

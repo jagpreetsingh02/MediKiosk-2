@@ -286,6 +286,11 @@ async def build_history(db: AsyncSession, patient: Patient, *, suffix: str = "")
             recorded_at=visit.occurred_at,
             valid_from=visit.occurred_at,
             confirmed_by_physician=True,
+            # Seeded encounters ARE the patient's confirmed history — that is the whole point
+            # of them, and it is the same reasoning the migration uses to backfill the 805
+            # real rows. Left at the model default of `pending` they would be excluded from
+            # every active clinical view, so the demo patient would open with an empty record.
+            review_status="confirmed",
         )
         db.add(fact)
         await db.flush()
@@ -420,6 +425,11 @@ async def _seed_follow_up_visit(
             recorded_at=visit.occurred_at,
             valid_from=visit.occurred_at,
             confirmed_by_physician=True,
+            # Seeded encounters ARE the patient's confirmed history — that is the whole point
+            # of them, and it is the same reasoning the migration uses to backfill the 805
+            # real rows. Left at the model default of `pending` they would be excluded from
+            # every active clinical view, so the demo patient would open with an empty record.
+            review_status="confirmed",
         )
         db.add(fact)
         await db.flush()
@@ -460,6 +470,7 @@ async def _seed_follow_up_visit(
                 recorded_at=visit.occurred_at,
                 valid_from=visit.occurred_at,
                 confirmed_by_physician=True,
+                review_status="confirmed",
             )
             db.add(fact)
             await db.flush()
