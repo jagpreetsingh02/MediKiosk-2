@@ -1,4 +1,8 @@
-import json, urllib.request, urllib.error, sys
+import json
+import sys
+import urllib.error
+import urllib.request
+
 BASE="http://127.0.0.1:10101"
 st=json.load(open("/tmp/mk_state.json")); SESSION=st["session"]; PT=st["patientToken"]
 
@@ -14,8 +18,8 @@ def call(method,path,token=None,body=None):
         return e.code, json.loads(e.read() or b"null")
 
 R=[]
-def ok(l,c,x=""):
-    print(f"  {'PASS' if c else 'FAIL'}  {l}{(' — '+str(x)) if x else ''}"); R.append(c); return c
+def ok(label, c, x=""):
+    print(f"  {'PASS' if c else 'FAIL'}  {label}{(' — '+str(x)) if x else ''}"); R.append(c); return c
 
 print("STEP 8  clinician identity + queue")
 s,t=call("POST","/mock-idp/token",body={"role":"clinician","sub":"dr.smoke@aiia"})
@@ -62,8 +66,8 @@ def walk(o):
         for v in o.values(): yield from walk(v)
     elif isinstance(o,list):
         for v in o: yield from walk(v)
-lines=[l for l in walk(brief) if l.get("reviewStatus") is not None]; statuses={}
-for l in lines: statuses[l.get("reviewStatus")]=statuses.get(l.get("reviewStatus"),0)+1
+lines=[ln for ln in walk(brief) if ln.get("reviewStatus") is not None]; statuses={}
+for line in lines: statuses[line.get("reviewStatus")]=statuses.get(line.get("reviewStatus"),0)+1
 ok("brief carries reviewable facts",s==200 and len(lines)>0,f"{len(lines)} lines, statuses={statuses}")
 ok("every promoted fact is pending",set(statuses)=={"pending"},statuses)
 
@@ -85,7 +89,7 @@ ok("rejected is TERMINAL (un-reject refused)",s==400,(r.get('issue') or [{}])[0]
 
 print("STEP 14 rejected never resurfaces; provenance still opens for the auditor")
 s,brief2=call("GET",f"/api/v1/patients/{PATIENT}/brief?encounter={ENC}",DT)
-refs={l["factRef"] for l in walk(brief2) if l.get("reviewStatus") is not None}
+refs={ln["factRef"] for ln in walk(brief2) if ln.get("reviewStatus") is not None}
 ok("rejected fact gone from the brief",REJECT not in refs,f"{len(refs)} lines remain")
 s,ev=call("GET",f"/api/v1/patients/{PATIENT}/encounters/{ENC}/facts/{REJECT}",DT)
 ok("rejected fact not openable from a clinical view",s==400,f"HTTP {s}")

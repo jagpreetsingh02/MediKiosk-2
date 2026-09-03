@@ -38,6 +38,78 @@ log = get_logger(__name__)
 _LOGPROB_CONFIDENT = -0.10
 _LOGPROB_POOR = -1.00
 
+#: ⛔ THE LOGICAL MODEL. Pinned in code, not configuration, because it is a statement about
+#: WHICH MODEL'S WEIGHTS ran — not a deployment knob. Groq hosts OpenAI's
+#: `whisper-large-v3-turbo`; `settings.groq_asr_model` carries Groq's own shorter identifier
+#: for the same thing. Reporting only the provider's id would make a hosted run of the
+#: required model indistinguishable from a different Whisper size, and reporting only the
+#: logical id would imply local Hugging Face execution. Both are carried, separately.
+LOGICAL_MODEL = "openai/whisper-large-v3-turbo"
+PROVIDER = "groq"
+
+#: Container formats the Groq transcription endpoint accepts directly. The browser records
+#: webm/opus (Chromium) or mp4/aac (Safari) and BOTH are on this list, so nothing is
+#: transcoded — see `_upload_name` for why the *filename* still matters.
+_ACCEPTED_SUFFIX: dict[str, str] = {
+    "audio/webm": "webm",
+    "video/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/mp4": "mp4",
+    "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/flac": "flac",
+}
+
+
+#: Whisper reports the language it DETECTED as an English name ("English", "Hindi"), while
+#: every other language field in MediKiosk is an ISO 639-1 code. Verified against a real
+#: response: `{"language": "English"}`.
+_LANGUAGE_CODE: dict[str, str] = {
+    "english": "en", "hindi": "hi", "bengali": "bn", "tamil": "ta", "telugu": "te",
+    "marathi": "mr", "kannada": "kn", "malayalam": "ml", "gujarati": "gu",
+    "punjabi": "pa", "urdu": "ur", "odia": "or", "oriya": "or", "assamese": "as",
+    "nepali": "ne", "sanskrit": "sa",
+}
+
+
+def _language_code(reported: str, requested: str) -> str:
+    """Whisper's detected language as an ISO code, or the requested one if unrecognised.
+
+    ⛔ THE DETECTION IS KEPT, NOT DISCARDED. Whisper genuinely identifies the language and
+    that is worth recording — a Hindi answer to an English-configured kiosk is a real event.
+    What is normalised is only the SPELLING, because `Transcript.language` flows into places
+    that compare against `SUPPORTED_LANGUAGES` keys, and "English" is not "en".
+    
+    An unrecognised name falls back to the requested code rather than being passed through:
+    a language field nothing downstream can match is worse than an honest default, and the
+    raw value is still visible in the provider log line.
+    """
+    key = (reported or "").strip().casefold()
+    if key in _LANGUAGE_CODE:
+        return _LANGUAGE_CODE[key]
+    # Already a code (some responses return "en" directly).
+    if 2 <= len(key) <= 3 and key.isalpha():
+        return key
+    return requested
+
+
+def _upload_name(media_type: str) -> str:
+    """The filename sent in the multipart part, derived from the real media type.
+
+    ⛔ THIS WAS HARDCODED TO `audio.wav`, AND THAT IS A BUG THE MOMENT REAL AUDIO ARRIVES.
+    Groq infers the container from the filename extension, so a webm blob announced as
+    `audio.wav` is either rejected or decoded as the wrong format — and the browser records
+    webm, never wav. The extension now follows the media type the client actually sent.
+    """
+    base = (media_type or "").split(";", 1)[0].strip().casefold()
+    return f"audio.{_ACCEPTED_SUFFIX.get(base, 'wav')}"
+
 
 class GroqWhisperSpeechBackend:
     """Satisfies `SpeechBackend`."""
@@ -54,7 +126,10 @@ class GroqWhisperSpeechBackend:
                 "GROQ_API_KEY is not set, so the Whisper backend cannot be used. "
                 "The local backend is used instead."
             )
+        #: What is sent to Groq. The logical identity is `LOGICAL_MODEL` above.
         self.model = settings.groq_asr_model
+        self.provider = PROVIDER
+        self.logical_model = LOGICAL_MODEL
 
     # -------------------------------------------------------------- ASR
 
@@ -67,7 +142,13 @@ class GroqWhisperSpeechBackend:
             response = httpx.post(
                 f"{settings.groq_base_url}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-                files={"file": ("audio.wav", io.BytesIO(audio), media_type or "audio/wav")},
+                files={
+                    "file": (
+                        _upload_name(media_type),
+                        io.BytesIO(audio),
+                        media_type or "audio/wav",
+                    )
+                },
                 data={
                     "model": self.model,
                     "language": language,
@@ -97,10 +178,13 @@ class GroqWhisperSpeechBackend:
         return Transcript(
             text=text,
             confidence=confidence,
-            language=str(body.get("language", language))[:8],
+            language=_language_code(str(body.get("language", "")), language),
             backend=self.name,
             duration_ms=int(float(body.get("duration", 0.0)) * 1000),
             empty=not text,
+            provider=PROVIDER,
+            model=LOGICAL_MODEL,
+            provider_model=self.model,
         )
 
     # -------------------------------------------------------------- TTS

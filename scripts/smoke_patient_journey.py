@@ -1,4 +1,8 @@
-import json, urllib.request, urllib.error, sys
+import json
+import sys
+import urllib.error
+import urllib.request
+
 BASE = "http://127.0.0.1:10101"
 
 def call(method, path, token=None, body=None, raw=False):
@@ -40,7 +44,7 @@ SESSION = sess["sessionRef"]
 print("STEP 4  answer questions")
 VOICE = []
 answered = 0
-for i in range(60):
+for _turn in range(60):
     s, step = call("GET", f"/api/v1/sessions/{SESSION}/dialogue/next", PT)
     if s != 200 or step.get("complete") or not step.get("question"): break
     q = step["question"]
@@ -81,7 +85,8 @@ else:
     results.append(ok("voice turn", False, "never reached"))
 
 print("STEP 6  document upload -> OCR pipeline")
-import mimetypes, uuid, os
+import uuid
+
 path = "data/fixtures/documents/prescription.pdf"
 boundary = uuid.uuid4().hex
 body = b"".join([

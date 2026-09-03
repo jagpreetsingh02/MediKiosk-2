@@ -78,13 +78,28 @@ export interface StepResponse {
 export interface VoiceOutcome {
   accepted: boolean;
   degradedToTouch: boolean;
-  reason: 'unclear' | 'silence' | null;
+  /**
+   * Why the question degraded. All four keys of `voice.DEGRADE_PROMPTS`:
+   *   silence     the microphone heard nothing
+   *   unclear     heard, but below the confidence threshold (or nothing extractable)
+   *   unmeasured  no confidence score existed and the question is confidence-critical
+   *   service     the recogniser or the extraction model could not be reached
+   * The type previously listed only the first two, so a `service` degradation — the one that
+   * happens when a provider is down — was unrepresentable on the client.
+   */
+  reason: 'unclear' | 'silence' | 'unmeasured' | 'service' | null;
   transcript: {
     text: string;
     confidence: number | null;
     confidenceStatus: 'measured' | 'unavailable';
     reliable: boolean;
     threshold: number;
+    /** Which engine actually produced these words. Never collapse these into "voice". */
+    backend?: string;
+    provider?: string | null;
+    model?: string | null;
+    providerModel?: string | null;
+    language?: string;
   };
   factsRecorded: number;
   prompt: string | null;
@@ -886,6 +901,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ turnId, questionId, value, modality: 'typed' }),
     }),
+  /**
+   * PRIMARY spoken-answer path: real recorded audio, transcribed server-side.
+   *
+   * The browser records and uploads; it does not recognise. The `VoiceOutcome` that comes
+   * back names the provider and model that actually produced the words, so a fallback can
+   * never be displayed as Whisper.
+   */
+  answerAudio: (
+    ref: string,
+    turnId: string,
+    questionId: string,
+    audio: Blob,
+    bargeIn = false,
+  ) => {
+    const form = new FormData();
+    // The extension follows the blob's real type; the server maps it to the container the
+    // provider expects, so nothing is transcoded.
+    form.append('file', audio, `answer.${(audio.type || '').includes('mp4') ? 'mp4' : 'webm'}`);
+    form.append('turnId', turnId);
+    form.append('questionId', questionId);
+    form.append('bargeIn', String(bargeIn));
+    return request<StepResponse & { speechUnavailable?: boolean }>(
+      `/api/v1/sessions/${ref}/dialogue/answer/audio`,
+      { method: 'POST', body: form },
+    );
+  },
+
+  /** FALLBACK only: a transcript the CLIENT produced. Reported as `browser`, never Whisper. */
   answerVoice: (
     ref: string,
     turnId: string,

@@ -43,12 +43,24 @@ def get_client_backend() -> ClientSpeechBackend:
 
 
 def describe() -> dict[str, object]:
+    """What `/about` reports. Names the model, not just the adapter.
+
+    `name` is the adapter that is wired in; `model` and `provider` are what will actually
+    execute. A demo audience needs the second pair — "whisper" alone does not say whether
+    that is a hosted `whisper-large-v3-turbo` or a local one, and does not say which size.
+    Reported as `null` for backends that carry no model identity (the browser path).
+    """
     backend = get_speech()
     return {
         "name": backend.name,
         "offline": backend.offline,
         "languages": list(backend.languages),
         "configured": settings.speech_backend,
+        # Present only on backends that name a model. `getattr` rather than a protocol
+        # member because `SpeechBackend` describes recognition, not provenance metadata.
+        "provider": getattr(backend, "provider", None),
+        "model": getattr(backend, "logical_model", None),
+        "providerModel": getattr(backend, "model", None),
         "asrConfidenceThreshold": settings.asr_confidence_threshold,
         "degradationPolicy": (
             "Below the threshold the question falls back to touch and is re-presented. "

@@ -259,14 +259,15 @@ export default function Consultation() {
                       language={question.language}
                       disabled={busy}
                       outcome={voice}
-                      onTranscript={async (text, confidence) => {
+                      // PRIMARY path: real recorded audio, transcribed server-side by
+                      // Whisper. The browser no longer produces the transcript.
+                      onAudio={async (audio) => {
                         await run(() =>
-                          api.answerVoice(
+                          api.answerAudio(
                             sessionRef,
                             question.turnId,
                             question.questionId,
-                            text,
-                            confidence,
+                            audio,
                             false,
                           ),
                         );

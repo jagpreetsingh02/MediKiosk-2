@@ -1,25 +1,42 @@
 """The kiosk's main loop: ask a question, take an answer, ask the next one.
 
 Every answer route funnels into `record_fact()`. `POST /answer` handles tap and typed input;
-`POST /answer/voice` handles speech and applies the degradation policy. They are separate
-routes because they have genuinely different failure modes, and collapsing them would hide
-the degradation path behind an optional field.
+speech has two entry points that share everything after the transcript exists:
+
+    POST /answer/audio   PRIMARY — real recorded audio, transcribed server-side by the
+                         configured `SpeechBackend` (Groq-hosted whisper-large-v3-turbo).
+    POST /answer/voice   FALLBACK — a transcript the CLIENT already produced, for a device
+                         that cannot record or reach the network. Labelled as such in the
+                         response metadata; it is never reported as Whisper.
+
+⛔ THE SPLIT IS AT TRANSCRIPTION AND NOWHERE ELSE. Both routes build a `Transcript` and then
+call the identical `_record_spoken_answer`, so the degradation policy, extraction, audit rows
+and provenance are one code path with one set of rules. Two routes exist because the two have
+genuinely different failure modes — a microphone permission versus an unreachable provider —
+and collapsing them would hide the degradation path behind an optional field.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, File, UploadFile
 
 from app.api.deps import CurrentIdentity, DbSession, load_context, save_context
 from app.audit.chain import record, record_ai_call
 from app.contracts.provenance import Modality
-from app.core.errors import ConsentRequired, ValidationError
+from app.core.config import settings
+from app.core.errors import ConsentRequired, UpstreamUnavailable, ValidationError
+from app.core.logging import get_logger
 from app.modules.dialogue.answers import record_answer, record_derived
-from app.modules.dialogue.voice import handle_spoken_answer
+from app.modules.dialogue.voice import (
+    degrade_for_unavailable_speech,
+    handle_spoken_answer,
+)
 from app.redflags.engine import evaluate, raise_priority
 from app.speech.registry import get_client_backend, get_speech
+
+log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/sessions/{session_ref}/dialogue", tags=["dialogue"])
 
@@ -143,15 +160,129 @@ async def answer_voice(
         confidence=None if raw_confidence is None else float(raw_confidence),
         language=context.row.language,
     )
+    return await _record_spoken_answer(
+        db,
+        context,
+        identity,
+        turn_id=turn_id,
+        question_id=question_id,
+        transcript=transcript,
+        audio_ref=payload.get("audioRef"),
+        barge_in=bool(payload.get("bargeIn", False)),
+    )
 
+
+#: Containers a browser's MediaRecorder actually produces, plus the ones a fixture may use.
+#: Chromium records `audio/webm;codecs=opus`, Safari `audio/mp4`. Both are accepted by the
+#: provider directly, so nothing is transcoded — see `groq_whisper._upload_name`.
+_AUDIO_TYPES = (
+    "audio/webm", "video/webm", "audio/ogg", "audio/opus", "audio/mp4", "audio/m4a",
+    "audio/x-m4a", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave",
+    "audio/flac",
+)
+
+
+@router.post("/answer/audio")
+async def answer_audio(
+    db: DbSession,
+    session_ref: str,
+    identity: CurrentIdentity,
+    file: Annotated[UploadFile, File()],
+    turnId: Annotated[str, Body()] = "",
+    questionId: Annotated[str, Body()] = "",
+    bargeIn: Annotated[bool, Body()] = False,
+) -> dict[str, Any]:
+    """⛔ THE PRIMARY SPOKEN-ANSWER ROUTE. Real audio in, server-side transcription.
+
+    The browser records and uploads; it does NOT recognise. That distinction is the whole
+    point of this route: a client-produced transcript cannot be attributed to a model, cannot
+    carry a measured confidence on most browsers, and cannot be reproduced from the audit
+    trail. Here the bytes reach `SpeechBackend.transcribe`, and the transcript that comes back
+    names the provider and model that produced it.
+
+    Everything after transcription is `_record_spoken_answer`, shared with the fallback route.
+    """
+    context = await load_context(db, session_ref, identity=identity)
+    if "voice" not in context.ledger.consent_scopes:
+        raise ConsentRequired(
+            "The voice scope was not granted. The patient can answer everything by tapping."
+        )
+    if not turnId or not questionId:
+        raise ValidationError("turnId and questionId are both required.")
+
+    media_type = (file.content_type or "").split(";", 1)[0].strip().casefold()
+    if media_type not in _AUDIO_TYPES:
+        raise ValidationError(
+            "That recording is in a format this kiosk cannot read. Please answer by tapping."
+        )
+
+    # Bounded read. A voice turn is seconds of audio; anything approaching the document
+    # ceiling is a client fault, and reading it in full before refusing would be the bug
+    # `routes_documents` already had once.
+    audio = await file.read(settings.max_upload_bytes + 1)
+    if len(audio) > settings.max_upload_bytes:
+        raise ValidationError("That recording is too long. Please answer in a shorter reply.")
+    if not audio:
+        raise ValidationError("The recording was empty. Please try again, or tap your answer.")
+
+    try:
+        transcript = get_speech().transcribe(
+            audio, language=context.row.language, media_type=media_type
+        )
+    except (UpstreamUnavailable, ValidationError) as exc:
+        # THE CONSULTATION SURVIVES A DEAD PROVIDER. Nothing is recorded, no transcript is
+        # invented, and this question falls back to tapping with the "service" prompt. Voice
+        # is offered again on the next question — the degradation is never sticky.
+        log.warning("speech.unavailable", error=type(exc).__name__, detail=str(exc)[:160])
+        outcome = degrade_for_unavailable_speech(
+            context.machine, questionId, context.row.language
+        )
+        result = await _next_payload(db, context)
+        await save_context(db, context)
+        return {
+            **result,
+            "voice": outcome.to_dict(),
+            "speechUnavailable": True,
+            "escalation": _escalate(context),
+        }
+
+    return await _record_spoken_answer(
+        db,
+        context,
+        identity,
+        turn_id=turnId,
+        question_id=questionId,
+        transcript=transcript,
+        audio_ref=None,
+        barge_in=bargeIn,
+    )
+
+
+async def _record_spoken_answer(
+    db,
+    context,
+    identity,
+    *,
+    turn_id: str,
+    question_id: str,
+    transcript,
+    audio_ref: str | None,
+    barge_in: bool,
+) -> dict[str, Any]:
+    """Everything after a transcript exists, shared by both spoken-answer routes.
+
+    Extracted rather than duplicated so the degradation policy, the extraction gates, the AI
+    audit row and the provenance path cannot drift between the primary and fallback entry
+    points. The only thing the two routes decide is WHO produced the transcript.
+    """
     outcome = handle_spoken_answer(
         context.machine,
         context.ledger,
         turn_id=turn_id,
         question_id=question_id,
         transcript=transcript,
-        audio_ref=payload.get("audioRef"),
-        barge_in=bool(payload.get("bargeIn", False)),
+        audio_ref=audio_ref,
+        barge_in=barge_in,
     )
 
     if outcome.extraction and outcome.extraction.llm_response is not None:
@@ -187,6 +318,12 @@ async def answer_voice(
                 round(transcript.confidence, 3) if transcript.confidence is not None else None
             ),
             "confidenceStatus": transcript.confidence_status,
+            # WHICH ENGINE produced the words that became a clinical fact. Without this the
+            # audit trail cannot tell a Whisper transcript from a browser one after the fact,
+            # and "an AI transcribed this" is not an auditable statement about which AI.
+            "sttBackend": transcript.backend,
+            "sttProvider": transcript.provider,
+            "sttModel": transcript.model,
         },
         response_summary={
             "accepted": outcome.accepted,

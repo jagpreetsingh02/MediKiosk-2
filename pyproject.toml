@@ -32,6 +32,19 @@ ignore = ["B008"]
 "scripts/make_holdout_scripts.py" = ["E501"]
 "scripts/make_document_fixtures.py" = ["E501"]
 
+# The two journey smoke scripts are linear PROBES, not maintained modules: each line is one
+# step of the patient/clinician walk, and they are read as a transcript of what was exercised.
+# Compact `if x: print(...)` steps and long assertion messages are what make them readable in
+# that role. The substantive checks (ambiguous names, unused variables) are fixed, not ignored.
+"scripts/smoke_patient_journey.py" = ["E501", "E701", "E702", "E402"]
+"scripts/smoke_clinician_journey.py" = ["E501", "E701", "E702", "E402"]
+
+# Sharing a pytest fixture between test modules means importing it by name and then naming a
+# test parameter after it — which ruff reads as a redefinition. The alternative is either
+# duplicating the whole app-client fixture or moving it out of the end-to-end suite that owns
+# it, and neither is worth a false positive. The import is real and the fixture is used.
+"tests/test_whisper_stt.py" = ["F811"]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true

@@ -35,6 +35,27 @@ class Transcript:
     #: True when the backend heard nothing usable at all, as opposed to hearing it badly.
     empty: bool = False
 
+    # ---- who actually produced this transcript -------------------------------------
+    #
+    # ⛔ THESE THREE EXIST SO A FALLBACK CAN NEVER BE REPORTED AS WHISPER.
+    #
+    # `backend` alone was ambiguous the moment more than one thing could produce a
+    # transcript: "whisper" says which adapter ran but not who executed the model, and a
+    # browser-generated transcript arriving through the same contract would be
+    # indistinguishable in a log or a demo. Three fields, because there are three genuinely
+    # different questions:
+    #
+    #   provider        WHO RAN IT       groq | browser | local | bhashini
+    #   model           WHAT IT IS       openai/whisper-large-v3-turbo   (logical identity)
+    #   provider_model  WHAT WAS SENT    whisper-large-v3-turbo          (the API's own id)
+    #
+    #: The distinction between the last two is not pedantry: Groq hosts OpenAI's weights
+    #: under its own shorter identifier, and collapsing them would make it impossible to tell
+    #: a hosted run of the required model from a local one, or from a different Whisper size.
+    provider: str | None = None
+    model: str | None = None
+    provider_model: str | None = None
+
     @property
     def measured(self) -> bool:
         return self.confidence is not None
@@ -63,6 +84,11 @@ class Transcript:
             "reliable": self.reliable,
             "empty": self.empty,
             "threshold": settings.asr_confidence_threshold,
+            # On the wire so a demo audience — and a developer reading a response — can see
+            # which engine actually produced these words, rather than trusting a label.
+            "provider": self.provider,
+            "model": self.model,
+            "providerModel": self.provider_model,
         }
 
 

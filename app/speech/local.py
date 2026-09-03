@@ -93,6 +93,10 @@ class LocalSpeechBackend:
             duration_ms=duration_ms,
             word_confidences=tuple(confidences),
             empty=not text,
+            # Vosk ran, so Vosk is what the record says — see `client.py` for the rule.
+            provider="local",
+            model=f"vosk:{Path(self._vosk_dir).name}" if self._vosk_dir else "vosk",
+            provider_model=None,
         )
 
     # -------------------------------------------------------------- TTS

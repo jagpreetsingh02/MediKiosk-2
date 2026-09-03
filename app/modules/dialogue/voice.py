@@ -176,6 +176,30 @@ def handle_spoken_answer(
     )
 
 
+def degrade_for_unavailable_speech(
+    machine: DialogueMachine, question_id: str, language: str
+) -> VoiceOutcome:
+    """The recogniser itself could not run. Degrade this question, record nothing.
+
+    ⛔ THE CONSULTATION MUST NOT DIE BECAUSE AN ASR PROVIDER DID.
+
+    `handle_spoken_answer` already covers the EXTRACTION model being unreachable, but that
+    branch needs a transcript to have existed. When the ASR call itself fails there is no
+    transcript at all, and the honest response is the same one a patient already understands:
+    this question falls back to tapping, with the "service" prompt, and the microphone is
+    offered again on the next question. Degradation stays per-question and never sticky.
+
+    Nothing is recorded. There is deliberately no path here that invents a transcript.
+    """
+    return _degrade(machine, question_id, _SILENT, "service", language)
+
+
+#: A transcript that carries no words and names no engine. Used only to satisfy the
+#: `VoiceOutcome` shape when ASR never ran — `provider`/`model` stay None precisely so a
+#: failed run cannot be mistaken for a successful one in the response metadata.
+_SILENT = Transcript(text="", confidence=None, language="en", backend="unavailable", empty=True)
+
+
 def _degrade(
     machine: DialogueMachine,
     question_id: str,

@@ -42,6 +42,12 @@ class ClientSpeechBackend:
             language=language,
             backend=self.name,
             empty=not stripped,
+            # ⛔ NEVER "whisper". These words came out of the BROWSER's recogniser, and the
+            # response says so. A fallback that reports the primary engine's name is worse
+            # than no metadata at all: it makes an unverifiable transcript look verified.
+            provider="browser",
+            model="browser-web-speech",
+            provider_model=None,
         )
 
     def synthesise(self, text: str, *, language: str) -> Utterance:
